@@ -23,7 +23,7 @@ An **Abstract Business Rule Tree (ABRT)** is a structured, hierarchical represen
 
 ## 2. ABRT Node Taxonomy
 
-The ABRT is composed of **six node categories**, each representing a distinct kind of business rule construct found in PL/SQL code.
+The ABRT is composed of **seven node categories**, each representing a distinct kind of business rule construct found in PL/SQL code.
 
 ---
 
@@ -184,7 +184,42 @@ CONSTANT
 
 ---
 
-### 2.7 POLICY_BRANCH (Decision Node)
+### 2.7 VALUE_SET (Collection Leaf Node)
+
+Represents an explicit set of values used as the right operand of an `IN` or `NOT_IN` condition, or as a multi-value `when_value` in a `POLICY_CASE`. In PL/SQL this corresponds to the parenthesised list in `IN (...)` expressions or multi-value CASE branches.
+
+```
+VALUE_SET
+  id:           unique identifier
+  label:        business name of the value set (e.g., "Active Member Statuses")
+  values:       [ CONSTANT+ ]   -- ordered list of permitted/matching values
+  value_type:   [ NUMERIC | STRING | DATE ]  -- all values must share the same type
+  description:  business meaning of this set (optional)
+  review_flag:  boolean  -- true if any member CONSTANT is a LITERAL that should be externalised
+```
+
+**Example mapping:**
+```sql
+IF v_status IN ('ACTIVE', 'PENDING', 'SUSPENDED') THEN ...
+```
+Maps to:
+```
+CONDITION
+  ├── left_operand:  DATA_INPUT[MEMBER_STATUS]
+  ├── operator:      IN
+  └── right_operand: VALUE_SET[ELIGIBLE_STATUSES]
+                       values: [ CONSTANT('ACTIVE'), CONSTANT('PENDING'), CONSTANT('SUSPENDED') ]
+                       value_type: STRING
+```
+
+**Usage contexts:**
+- `CONDITION.right_operand` — when the operator is `IN` or `NOT_IN`
+- `POLICY_CASE.when_value` — when a single CASE branch matches multiple values
+
+---
+
+### 2.8 POLICY_BRANCH (Decision Node)
+
 
 Represents a multi-way policy decision — where the same business operation follows different paths based on fund type, member category, product type, or regulatory regime. Common in superannuation where DB, DC, and hybrid funds co-exist.
 
@@ -192,7 +227,7 @@ Represents a multi-way policy decision — where the same business operation fol
 POLICY_BRANCH
   id:             unique identifier
   label:          name of the policy decision point
-  discriminator:  DATA_INPUT  -- the value that drives the branching
+  discriminator:  DATA_INPUT | FORMULA  -- the value that drives the branching
   branches:       [ POLICY_CASE* ]
 
 POLICY_CASE
@@ -208,7 +243,7 @@ When a `POLICY_CASE` is derived from an IF/ELSIF branch whose guard is a compari
 
 ---
 
-### 2.8 LOOKUP_REF (Reference Data Node)
+### 2.9 LOOKUP_REF (Reference Data Node)
 
 Represents a reference to a lookup table, rate table, or static classification table. Superannuation systems are rich in rate tables (contribution rates, tax brackets, fee schedules, age factors).
 
@@ -245,7 +280,7 @@ FORMULA           ::= { id, label, expression, result_type,
                          (DATA_INPUT | CONSTANT | FORMULA)+,
                          ROUNDING_RULE? }
 
-POLICY_BRANCH     ::= { id, label, discriminator:DATA_INPUT,
+POLICY_BRANCH     ::= { id, label, discriminator:(DATA_INPUT | FORMULA),
                          POLICY_CASE+ }
 
 POLICY_CASE       ::= { when_value, label, CONDITION?, BUSINESS_RULE+ }
@@ -261,6 +296,9 @@ DATA_INPUT        ::= { id, label, source_type, source_ref,
 
 CONSTANT          ::= { id, label, value, value_type,
                          const_type, description, review_flag }
+
+VALUE_SET         ::= { id, label, values:CONSTANT+, value_type,
+                         description?, review_flag }
 ```
 
 ---
@@ -726,7 +764,7 @@ FORMULA           ::= { id, label, expression, result_type,
                          (DATA_INPUT | CONSTANT | FORMULA)+,
                          ROUNDING_RULE? }
 
-POLICY_BRANCH     ::= { id, label, discriminator:DATA_INPUT,
+POLICY_BRANCH     ::= { id, label, discriminator:(DATA_INPUT | FORMULA),
                          POLICY_CASE+ }
 
 POLICY_CASE       ::= { when_value, label, CONDITION?, BUSINESS_RULE+ }
@@ -742,6 +780,9 @@ DATA_INPUT        ::= { id, label, source_type, source_ref,
 
 CONSTANT          ::= { id, label, value, value_type,
                          const_type, description, review_flag }
+
+VALUE_SET         ::= { id, label, values:CONSTANT+, value_type,
+                         description?, review_flag }
 ```
 
 ### 9.9 Updated Node Relationship Summary

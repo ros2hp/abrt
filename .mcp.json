@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "awslabs.mysql-mcp-server": {
+      "command": "uv",
+      "args": [
+        "run", "--directory", "/Users/rosspayne/claude/plsql/mcp/src/mysql-mcp-server",
+        "awslabs.mysql-mcp-server",
+        "--hostname", "mysql8.cjegagpjwjyi.us-east-1.rds.amazonaws.com",
+        "--secret_arn", "arn:aws:secretsmanager:us-east-1:631795995269:secret:adminuser-gxlxEs",
+        "--database", "rulesdb",
+        "--region", "us-east-1",
+        "--readonly", "False"
+      ],
+      "env": {
+        "AWS_PROFILE": "default",
+        "AWS_REGION": "ap-southeast-1",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      },
+      "disabled": false,
+      "autoApprove": []
+    },
+    "mcp-mermaid": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-mermaid"
+      ]
+    }
+  }
+}
