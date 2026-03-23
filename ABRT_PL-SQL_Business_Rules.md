@@ -129,7 +129,7 @@ CONDITION
   logical_op:   [ AND | OR | NOT | NONE ]  -- how this combines with siblings
   left_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE
   right_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE | VALUE_SET
-  children:     [ CONDITION* ]    -- nested AND/OR sub-conditions
+  conditions:   [ CONDITION* ]    -- nested AND/OR sub-conditions
   then_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH
   else_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH | NULL
 ```
@@ -416,7 +416,7 @@ CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
 
 CONDITION         ::= { id, label, operator, logical_op,
                          left_operand, right_operand,
-                         CONDITION*,
+                         conditions:CONDITION*,
                          then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
                          else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
 
@@ -937,7 +937,7 @@ CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
 
 CONDITION         ::= { id, label, operator, logical_op,
                          left_operand, right_operand,
-                         CONDITION*,
+                         conditions:CONDITION*,
                          then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
                          else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
 
