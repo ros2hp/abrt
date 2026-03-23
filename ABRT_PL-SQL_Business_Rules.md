@@ -61,9 +61,14 @@ BUSINESS_RULE
   rule_type:      [ CONSTRAINT | FORMULA | POLICY | ELIGIBILITY | DERIVATION | ALLOCATION | LOOKUP | ACTION ]
   priority:       integer (for ordered rule sets)
   source_lines:   PL/SQL line range for traceability
-  derived_values: [ FORMULA* ]   -- intermediate values evaluated before children (optional)
-  cursor_scope:   CURSOR_SCOPE   -- iteration boundary for cursor-based rules (optional)
-  children:       [ CONDITION* | FORMULA* | POLICY_BRANCH* | LOOKUP_REF* | DATA_INPUT* | ACTION* ]
+  derived_values: [ FORMULA* ]      -- intermediate values evaluated before main logic (optional)
+  cursor_scope:   CURSOR_SCOPE     -- iteration boundary for cursor-based rules (optional)
+  conditions:     [ CONDITION* ]   -- conditional branches (IF/ELSIF/CASE guards)
+  formulas:       [ FORMULA* ]     -- calculations and derivations
+  policy_branch:  POLICY_BRANCH?   -- multi-way policy decision (at most one per rule)
+  lookup_ref:     LOOKUP_REF?      -- reference data lookup (at most one per rule)
+  actions:        [ ACTION* ]      -- unconditional imperative outcomes (DML, CALL, etc.)
+  data_inputs:    [ DATA_INPUT* ]  -- standalone data sources (e.g., procedure arguments)
 ```
 
 **`derived_values`** — When a rule computes intermediate values before its main logic (e.g., `v_days_overdue := TRUNC(SYSDATE - v_due_date)`, `v_loyalty_years := TRUNC(MONTHS_BETWEEN(SYSDATE, join_date) / 12)`), those formulas are listed here. Derived values are evaluated in order before conditions and branches, making execution dependencies explicit. Child nodes reference derived values via `REF`.
@@ -398,7 +403,12 @@ BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
                          derived_values:FORMULA*,
                          cursor_scope:CURSOR_SCOPE?,
-                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF | ACTION)* }
+                         conditions:CONDITION*,
+                         formulas:FORMULA*,
+                         policy_branch:POLICY_BRANCH?,
+                         lookup_ref:LOOKUP_REF?,
+                         actions:ACTION*,
+                         data_inputs:DATA_INPUT* }
 
 CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
@@ -914,7 +924,12 @@ TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
                          derived_values:FORMULA*,
                          cursor_scope:CURSOR_SCOPE?,
-                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF | ACTION)* }
+                         conditions:CONDITION*,
+                         formulas:FORMULA*,
+                         policy_branch:POLICY_BRANCH?,
+                         lookup_ref:LOOKUP_REF?,
+                         actions:ACTION*,
+                         data_inputs:DATA_INPUT* }
 
 CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
@@ -1031,4 +1046,4 @@ ABRT
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
 *v1.4 adds CURSOR_SCOPE, derived_values, wrapper_fn on FORMULA, discriminator_type/bracket_type on POLICY_BRANCH, when_type on POLICY_CASE, and CALL vs FORMULA guidance*
 *v1.5 allows ACTION directly in POLICY_CASE rule_set — eliminates unnecessary BUSINESS_RULE wrappers for simple imperative outcomes*
-*v1.6 adds ACTION to BUSINESS_RULE rule_type enum and children — unconditional imperative rules no longer need dummy conditions or wrapper nodes*
+*v1.6 adds ACTION to BUSINESS_RULE rule_type enum and typed child arrays; replaces abstract `children` grouping with explicit typed attributes (conditions, formulas, policy_branch, lookup_ref, actions, data_inputs) matching JSON serialization*
