@@ -65,7 +65,7 @@ CREATE TABLE abrt_business_rule (
     parent_rule_id      VARCHAR(100)  NULL,
     label               VARCHAR(500)  NOT NULL,
     rule_type           ENUM('CONSTRAINT','FORMULA','POLICY','ELIGIBILITY',
-                             'DERIVATION','ALLOCATION','LOOKUP')
+                             'DERIVATION','ALLOCATION','LOOKUP','ACTION')
                         NOT NULL,
     description         TEXT          NULL,
     priority            INT           NULL,
@@ -434,8 +434,8 @@ CREATE TABLE abrt_lookup_key_column (
 ) ENGINE=InnoDB;
 
 -- ----------------------------------------------------------------------------
--- RULE_ACTION (links business rules directly to unconditional actions —
--- used when a rule performs imperative side effects with no condition guard)
+-- RULE_ACTION (links business rules to direct child ACTION nodes — used
+-- when rule_type = 'ACTION' and the action is an unconditional child)
 -- ----------------------------------------------------------------------------
 CREATE TABLE abrt_rule_action (
     rule_id         VARCHAR(100)  NOT NULL,

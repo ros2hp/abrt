@@ -58,18 +58,15 @@ BUSINESS_RULE
   id:             unique identifier (e.g., "BR-CONTRIB-001")
   label:          short business name
   description:    plain English statement of the rule
-  rule_type:      [ CONSTRAINT | FORMULA | POLICY | ELIGIBILITY | DERIVATION | ALLOCATION | LOOKUP ]
+  rule_type:      [ CONSTRAINT | FORMULA | POLICY | ELIGIBILITY | DERIVATION | ALLOCATION | LOOKUP | ACTION ]
   priority:       integer (for ordered rule sets)
   source_lines:   PL/SQL line range for traceability
   derived_values: [ FORMULA* ]   -- intermediate values evaluated before children (optional)
   cursor_scope:   CURSOR_SCOPE   -- iteration boundary for cursor-based rules (optional)
-  actions:        [ ACTION* ]    -- unconditional imperative outcomes (optional)
-  children:       [ CONDITION* | FORMULA* | POLICY_BRANCH* | LOOKUP_REF* | DATA_INPUT* ]
+  children:       [ CONDITION* | FORMULA* | POLICY_BRANCH* | LOOKUP_REF* | DATA_INPUT* | ACTION* ]
 ```
 
 **`derived_values`** — When a rule computes intermediate values before its main logic (e.g., `v_days_overdue := TRUNC(SYSDATE - v_due_date)`, `v_loyalty_years := TRUNC(MONTHS_BETWEEN(SYSDATE, join_date) / 12)`), those formulas are listed here. Derived values are evaluated in order before conditions and branches, making execution dependencies explicit. Child nodes reference derived values via `REF`.
-
-**`actions`** — When a rule unconditionally performs imperative side effects — DML, procedure calls, error raising — with no condition guarding them, those actions are listed here directly. This avoids the need for dummy always-true conditions or misusing the `formulas` array for side-effecting operations. Actions reached through conditional logic should still use `CONDITION.then_branch` / `else_branch` rather than this array.
 
 **Rule Types:**
 - `CONSTRAINT` — A hard limit or prohibition (e.g., "Contribution must not exceed concessional cap")
@@ -79,6 +76,7 @@ BUSINESS_RULE
 - `DERIVATION` — Classifies or maps a value to a category
 - `ALLOCATION` — Distributes an amount across accounts or members
 - `LOOKUP` — Retrieves a rate or value from a reference table based on criteria
+- `ACTION` — An unconditional imperative side effect: DML, procedure call, error raising, or assignment. Use this rule type when the business rule exists solely to perform an action with no condition guarding it. Actions reached through conditional logic should still use `CONDITION.then_branch` / `else_branch` with ACTION child nodes on the condition, not this rule type.
 
 ---
 
@@ -400,8 +398,7 @@ BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
                          derived_values:FORMULA*,
                          cursor_scope:CURSOR_SCOPE?,
-                         actions:ACTION*,
-                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF)* }
+                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF | ACTION)* }
 
 CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
@@ -917,8 +914,7 @@ TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
                          derived_values:FORMULA*,
                          cursor_scope:CURSOR_SCOPE?,
-                         actions:ACTION*,
-                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF)* }
+                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF | ACTION)* }
 
 CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
@@ -1035,4 +1031,4 @@ ABRT
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
 *v1.4 adds CURSOR_SCOPE, derived_values, wrapper_fn on FORMULA, discriminator_type/bracket_type on POLICY_BRANCH, when_type on POLICY_CASE, and CALL vs FORMULA guidance*
 *v1.5 allows ACTION directly in POLICY_CASE rule_set — eliminates unnecessary BUSINESS_RULE wrappers for simple imperative outcomes*
-*v1.6 adds optional actions array on BUSINESS_RULE for unconditional imperative outcomes; children production becomes (...)* allowing action-only rules*
+*v1.6 adds ACTION to BUSINESS_RULE rule_type enum and children — unconditional imperative rules no longer need dummy conditions or wrapper nodes*
