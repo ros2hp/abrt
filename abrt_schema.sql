@@ -1,5 +1,5 @@
 -- ============================================================================
--- ABRT v1.3 MySQL Schema
+-- ABRT v1.4 MySQL Schema
 -- Relational tables for serialising ABRT JSON to a MySQL database.
 -- ============================================================================
 
@@ -131,6 +131,8 @@ CREATE TABLE abrt_formula (
     rounding_decimals INT         NULL,
     rounding_basis  ENUM('CENT','DOLLAR','UNIT')
                     NULL,
+    wrapper_fn      ENUM('GREATEST','LEAST','NVL','ABS','SIGN')
+                    NULL,             -- outer bounding/coalescing function
     note            TEXT          NULL,
     CONSTRAINT fk_formula_rule
         FOREIGN KEY (rule_id) REFERENCES abrt_business_rule(rule_id)
@@ -264,15 +266,84 @@ CREATE TABLE abrt_formula_operand (
 ) ENGINE=InnoDB;
 
 -- ----------------------------------------------------------------------------
+-- FORMULA_WRAPPER_ARG (additional arguments for wrapper functions, e.g.
+-- the floor value in GREATEST(calc, 150))
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_formula_wrapper_arg (
+    wrapper_arg_id  INT AUTO_INCREMENT PRIMARY KEY,
+    formula_id      VARCHAR(100)  NOT NULL,
+    arg_type        ENUM('CONSTANT','DATA_INPUT','FORMULA')
+                    NOT NULL,
+    arg_ref         VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    CONSTRAINT fk_wraparg_formula
+        FOREIGN KEY (formula_id) REFERENCES abrt_formula(formula_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
+-- CURSOR_SCOPE (iteration boundary for cursor-based rules)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_cursor_scope (
+    cursor_scope_id VARCHAR(100)  NOT NULL PRIMARY KEY,
+    rule_id         VARCHAR(100)  NOT NULL,
+    label           VARCHAR(500)  NOT NULL,
+    cursor_name     VARCHAR(128)  NOT NULL,
+    source_table    VARCHAR(128)  NOT NULL,
+    filter_cond_id  VARCHAR(100)  NULL,       -- root CONDITION of cursor WHERE clause
+    CONSTRAINT fk_cscp_rule
+        FOREIGN KEY (rule_id) REFERENCES abrt_business_rule(rule_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_cscp_filter
+        FOREIGN KEY (filter_cond_id) REFERENCES abrt_condition(condition_id)
+        ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
+-- CURSOR_SCOPE_FIELD (links a cursor scope to its consumed DATA_INPUT fields)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_cursor_scope_field (
+    cursor_scope_id VARCHAR(100)  NOT NULL,
+    data_input_id   VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (cursor_scope_id, data_input_id),
+    CONSTRAINT fk_cscpfld_scope
+        FOREIGN KEY (cursor_scope_id) REFERENCES abrt_cursor_scope(cursor_scope_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_cscpfld_input
+        FOREIGN KEY (data_input_id) REFERENCES abrt_data_input(data_input_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
+-- DERIVED_VALUE (links a business rule to its pre-evaluated FORMULA values,
+-- evaluated in order before conditions and branches)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_derived_value (
+    rule_id         VARCHAR(100)  NOT NULL,
+    formula_id      VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (rule_id, formula_id),
+    CONSTRAINT fk_derval_rule
+        FOREIGN KEY (rule_id) REFERENCES abrt_business_rule(rule_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_derval_formula
+        FOREIGN KEY (formula_id) REFERENCES abrt_formula(formula_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
 -- POLICY_BRANCH (multi-way decision node)
 -- ----------------------------------------------------------------------------
 CREATE TABLE abrt_policy_branch (
     branch_id           VARCHAR(100)  NOT NULL PRIMARY KEY,
     rule_id             VARCHAR(100)  NOT NULL,
     label               VARCHAR(500)  NOT NULL,
-    discriminator_type  ENUM('DATA_INPUT','FORMULA','SEARCHED_CASE')
+    discriminator_type  ENUM('SIMPLE','SEARCHED')
                         NOT NULL,
-    discriminator_ref   VARCHAR(100)  NULL,
+    discriminator_ref   VARCHAR(100)  NULL,       -- required for SIMPLE; null for SEARCHED
+    bracket_type        ENUM('MARGINAL','FLAT','TIERED')
+                        NULL,                     -- optional: numeric tiered policy semantics
     note                TEXT          NULL,
     CONSTRAINT fk_branch_rule
         FOREIGN KEY (rule_id) REFERENCES abrt_business_rule(rule_id)
@@ -382,3 +453,8 @@ CREATE INDEX idx_action_type      ON abrt_action(action_type);
 CREATE INDEX idx_action_target    ON abrt_action(target);
 CREATE INDEX idx_actarg_action    ON abrt_action_argument(action_id);
 CREATE INDEX idx_actcol_action    ON abrt_action_column(action_id);
+CREATE INDEX idx_wraparg_formula  ON abrt_formula_wrapper_arg(formula_id);
+CREATE INDEX idx_cscp_rule        ON abrt_cursor_scope(rule_id);
+CREATE INDEX idx_cscpfld_scope    ON abrt_cursor_scope_field(cursor_scope_id);
+CREATE INDEX idx_derval_rule      ON abrt_derived_value(rule_id);
+CREATE INDEX idx_branch_bracket   ON abrt_policy_branch(bracket_type);

@@ -23,7 +23,7 @@ An **Abstract Business Rule Tree (ABRT)** is a structured, hierarchical represen
 
 ## 2. ABRT Node Taxonomy
 
-The ABRT is composed of **seven node categories**, each representing a distinct kind of business rule construct found in PL/SQL code.
+The ABRT is composed of **nine node categories**, each representing a distinct kind of business rule construct found in PL/SQL code.
 
 ---
 
@@ -55,14 +55,18 @@ Represents a single, identifiable, and nameable business rule within an operatio
 
 ```
 BUSINESS_RULE
-  id:           unique identifier (e.g., "BR-CONTRIB-001")
-  label:        short business name
-  description:  plain English statement of the rule
-  rule_type:    [ CONSTRAINT | FORMULA | POLICY | ELIGIBILITY | DERIVATION | ALLOCATION | LOOKUP ]
-  priority:     integer (for ordered rule sets)
-  source_lines: PL/SQL line range for traceability
-  children:     [ CONDITION* | FORMULA* | POLICY_BRANCH* | LOOKUP_REF* | DATA_INPUT* ]
+  id:             unique identifier (e.g., "BR-CONTRIB-001")
+  label:          short business name
+  description:    plain English statement of the rule
+  rule_type:      [ CONSTRAINT | FORMULA | POLICY | ELIGIBILITY | DERIVATION | ALLOCATION | LOOKUP ]
+  priority:       integer (for ordered rule sets)
+  source_lines:   PL/SQL line range for traceability
+  derived_values: [ FORMULA* ]   -- intermediate values evaluated before children (optional)
+  cursor_scope:   CURSOR_SCOPE   -- iteration boundary for cursor-based rules (optional)
+  children:       [ CONDITION* | FORMULA* | POLICY_BRANCH* | LOOKUP_REF* | DATA_INPUT* ]
 ```
+
+**`derived_values`** — When a rule computes intermediate values before its main logic (e.g., `v_days_overdue := TRUNC(SYSDATE - v_due_date)`, `v_loyalty_years := TRUNC(MONTHS_BETWEEN(SYSDATE, join_date) / 12)`), those formulas are listed here. Derived values are evaluated in order before conditions and branches, making execution dependencies explicit. Child nodes reference derived values via `REF`.
 
 **Rule Types:**
 - `CONSTRAINT` — A hard limit or prohibition (e.g., "Contribution must not exceed concessional cap")
@@ -75,7 +79,39 @@ BUSINESS_RULE
 
 ---
 
-### 2.3 CONDITION (Branch Node)
+### 2.3 CURSOR_SCOPE (Iteration Boundary Node)
+
+Represents the iteration boundary for cursor-based business rules. In PL/SQL, `FOR r IN cursor_name LOOP` patterns define a population scope — the cursor's query (including its WHERE clause) determines which records the enclosed rules apply to. Without an explicit `CURSOR_SCOPE`, this filtering logic is invisible in the ABRT and can only be inferred from scattered `CURSOR_FIELD` data inputs.
+
+```
+CURSOR_SCOPE
+  id:             unique identifier
+  label:          business description of the population scope
+  cursor_name:    PL/SQL cursor name (e.g., "C_MEMBERS")
+  source_table:   primary table the cursor queries
+  filter:         CONDITION   -- the cursor's WHERE clause as a structured condition tree
+  fields:         [ DATA_INPUT+ ]  -- cursor fields consumed by child rules
+```
+
+**Example mapping:**
+```sql
+CURSOR c_members IS
+  SELECT member_id, expiry_date, email, membership_type
+    FROM memberships WHERE expiry_date BETWEEN SYSDATE AND SYSDATE + 90;
+```
+Maps to:
+```
+CURSOR_SCOPE
+  ├── cursor_name:  "C_MEMBERS"
+  ├── source_table: "MEMBERSHIPS"
+  ├── filter:       CONDITION(left=EXPIRY_DATE, op=BETWEEN, right=[SYSDATE, SYSDATE+90])
+  └── fields:       [ DATA_INPUT[MEMBER_ID], DATA_INPUT[EXPIRY_DATE],
+                       DATA_INPUT[EMAIL], DATA_INPUT[MEMBERSHIP_TYPE] ]
+```
+
+---
+
+### 2.4 CONDITION (Branch Node)
 
 Represents a conditional branch within a business rule. Derived from IF / ELSIF / CASE / DECODE constructs in PL/SQL. Conditions form a tree of their own — AND/OR compositions are explicit child nodes.
 
@@ -105,7 +141,7 @@ CONDITION(logical_op=AND)
 
 ---
 
-### 2.4 FORMULA (Calculation Node)
+### 2.5 FORMULA (Calculation Node)
 
 Represents a calculation, expression, or derivation. Maps to PL/SQL arithmetic, string operations, or function calls that produce a business value.
 
@@ -118,9 +154,13 @@ FORMULA
   result_unit:  string (e.g., "AUD", "years", "%")
   operands:     [ DATA_INPUT | CONSTANT | FORMULA ]   -- inputs to this formula
   operator_seq: ordered list of operators applied
+  wrapper_fn:   [ GREATEST | LEAST | NVL | ABS | SIGN ] (optional)
+  wrapper_args: [ CONSTANT | DATA_INPUT | FORMULA ]+   (optional — additional args to wrapper)
   rounding:     ROUNDING_RULE (optional)
   children:     [ FORMULA* ]   -- sub-calculations
 ```
+
+**Wrapper Functions:** When a PL/SQL expression wraps a calculation in a bounding or coalescing function (e.g., `GREATEST(calculated_premium, 150)`, `NVL(looked_up_rate, 0.095)`), the core formula captures the calculation, while `wrapper_fn` and `wrapper_args` capture the outer function and its comparison/default arguments. This separates business logic (the calculation) from boundary enforcement (the floor, ceiling, or fallback).
 
 **Rounding Rule (embedded):**
 ```
@@ -132,7 +172,7 @@ ROUNDING_RULE
 
 ---
 
-### 2.5 DATA_INPUT (Leaf Node)
+### 2.6 DATA_INPUT (Leaf Node)
 
 Represents a data value consumed by a rule. This is the primary leaf node type — it traces where rule inputs come from.
 
@@ -160,7 +200,7 @@ DATA_INPUT
 
 ---
 
-### 2.6 CONSTANT (Leaf Node)
+### 2.7 CONSTANT (Leaf Node)
 
 Represents a hard-coded value or named constant that acts as a rule parameter. Distinguishing constants from inputs is critical — constants represent embedded policy decisions that may need to change.
 
@@ -184,7 +224,7 @@ CONSTANT
 
 ---
 
-### 2.7 VALUE_SET (Collection Leaf Node)
+### 2.8 VALUE_SET (Collection Leaf Node)
 
 Represents an explicit set of values used as the right operand of an `IN` or `NOT_IN` condition, or as a multi-value `when_value` in a `POLICY_CASE`. In PL/SQL this corresponds to the parenthesised list in `IN (...)` expressions or multi-value CASE branches.
 
@@ -218,20 +258,24 @@ CONDITION
 
 ---
 
-### 2.8 POLICY_BRANCH (Decision Node)
+### 2.9 POLICY_BRANCH (Decision Node)
 
 
 Represents a multi-way policy decision — where the same business operation follows different paths based on fund type, member category, product type, or regulatory regime. Common in superannuation where DB, DC, and hybrid funds co-exist.
 
 ```
 POLICY_BRANCH
-  id:             unique identifier
-  label:          name of the policy decision point
-  discriminator:  DATA_INPUT | FORMULA  -- the value that drives the branching
-  branches:       [ POLICY_CASE* ]
+  id:                 unique identifier
+  label:              name of the policy decision point
+  discriminator_type: [ SIMPLE | SEARCHED ]
+  discriminator:      DATA_INPUT | FORMULA  -- the value that drives the branching
+                      (required for SIMPLE; null for SEARCHED)
+  bracket_type:       [ MARGINAL | FLAT | TIERED ] (optional)
+  branches:           [ POLICY_CASE* ]
 
 POLICY_CASE
-  when_value:     CONSTANT | VALUE_SET
+  when_type:      [ CONSTANT | VALUE_SET | CONDITION | DEFAULT ]
+  when_value:     CONSTANT | VALUE_SET (required unless when_type=DEFAULT or CONDITION)
   label:          description of this policy path
   condition:      CONDITION (optional — structured decomposition of when_value
                              when the case is guarded by a comparison expression
@@ -239,11 +283,26 @@ POLICY_CASE
   rule_set:       [ BUSINESS_RULE* ]
 ```
 
+**Discriminator Types:**
+- `SIMPLE` — A simple CASE statement with a single discriminator expression (e.g., `CASE v_account_type WHEN 'SAVINGS' THEN ...`). The `discriminator` field holds the DATA_INPUT or FORMULA being switched on.
+- `SEARCHED` — A searched CASE or IF/ELSIF chain where each branch has an independent boolean guard expression (e.g., `WHEN v_loyalty_years >= 10 AND p_order_total > 500 THEN ...`). There is no single discriminator; the `discriminator` field is null.
+
+**Bracket Types** (optional, for numeric tiered policies):
+- `MARGINAL` — Each bracket's rate applies only to the amount *within* that bracket's range. Cumulative base amounts from lower brackets are added. Common in progressive tax calculations (e.g., Australian tax brackets where 19% applies only to the portion between $18,200 and $45,000).
+- `FLAT` — Each bracket's rate applies to the *entire* amount, not just the portion within the range. The matching bracket determines the rate for the whole value. Common in flat-rate interest tiers (e.g., 3% interest on the full amount_due when 31-90 days overdue).
+- `TIERED` — Discrete categories with no accumulation or rate application to amounts. The matching branch assigns a category or fixed value. Common in priority assignment, discount tiers, and classification rules.
+
+**When Types:**
+- `CONSTANT` — Branch matches a single constant value (e.g., `WHEN 'SAVINGS' THEN ...`)
+- `VALUE_SET` — Branch matches any value in a set (e.g., `WHEN IN ('SAVINGS', 'CHECKING') THEN ...`)
+- `CONDITION` — Branch is guarded by a comparison expression (e.g., `WHEN v_age < 25 THEN ...`)
+- `DEFAULT` — The ELSE/default branch that matches when no other branch does
+
 When a `POLICY_CASE` is derived from an IF/ELSIF branch whose guard is a comparison expression (e.g., `p_weight > 50`, `balance > 1000000`), the parser emits a structured `CONDITION` node on the policy case in addition to the `when_value`. This ensures that the operands, operator, and data types of the guard expression are captured as first-class ABRT elements and can be queried independently — for example, to find all rules that reference a particular DATA_INPUT or to validate that the comparison operator matches business intent.
 
 ---
 
-### 2.9 ACTION (Outcome Node)
+### 2.10 ACTION (Outcome Node)
 
 Represents an imperative outcome of a condition branch — an operation that the system performs when a condition is met (or not met). While nodes like `BUSINESS_RULE`, `FORMULA`, and `POLICY_BRANCH` describe *further evaluation*, an `ACTION` describes a *side effect*: raising an error, performing DML, calling a procedure, or returning a value.
 
@@ -270,6 +329,8 @@ ACTION
 - `CALL` — Invoke another procedure or function (e.g., `update_status(p_cust_id, 'AUTO_APPROVE')`)
 - `RETURN` — Return a value from a function
 - `ASSIGN` — Set a local variable to a value (intermediate assignment within a rule)
+
+**Guidance — CALL vs FORMULA:** When a PL/SQL branch body is a procedure call (e.g., `send_notification(member_id, email, 'URGENT_RENEWAL')`), model it as `ACTION(action_type=CALL)`, not as a FORMULA. FORMULAs are pure calculations that return a value with no side effects; ACTIONs are side-effecting operations. A procedure call that sends a notification, writes to a queue, or updates external state is always an ACTION, even if it happens to return a value.
 
 **Example mappings:**
 
@@ -306,7 +367,7 @@ ACTION(action_type=CALL, target="UPDATE_STATUS",
 
 ---
 
-### 2.10 LOOKUP_REF (Reference Data Node)
+### 2.11 LOOKUP_REF (Reference Data Node)
 
 Represents a reference to a lookup table, rate table, or static classification table. Superannuation systems are rich in rate tables (contribution rates, tax brackets, fee schedules, age factors).
 
@@ -332,7 +393,13 @@ ABRT              ::= BUSINESS_OPERATION+
 BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
 
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
+                         derived_values:FORMULA*,
+                         cursor_scope:CURSOR_SCOPE?,
                          (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF)+ }
+
+CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
+                         filter:CONDITION,
+                         fields:DATA_INPUT+ }
 
 CONDITION         ::= { id, label, operator, logical_op,
                          left_operand, right_operand,
@@ -349,12 +416,18 @@ ACTION            ::= { id, action_type, target?,
 
 FORMULA           ::= { id, label, expression, result_type,
                          (DATA_INPUT | CONSTANT | FORMULA)+,
+                         wrapper_fn:( GREATEST | LEAST | NVL | ABS | SIGN )?,
+                         wrapper_args:( CONSTANT | DATA_INPUT | FORMULA )*,
                          ROUNDING_RULE? }
 
-POLICY_BRANCH     ::= { id, label, discriminator:(DATA_INPUT | FORMULA),
+POLICY_BRANCH     ::= { id, label,
+                         discriminator_type:( SIMPLE | SEARCHED ),
+                         discriminator:(DATA_INPUT | FORMULA)?,
+                         bracket_type:( MARGINAL | FLAT | TIERED )?,
                          POLICY_CASE+ }
 
-POLICY_CASE       ::= { when_value, label, CONDITION?, BUSINESS_RULE+ }
+POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
+                         when_value?, label, CONDITION?, BUSINESS_RULE+ }
 
 LOOKUP_REF        ::= { id, label, table_name,
                          key_columns:DATA_INPUT+,
@@ -533,19 +606,21 @@ BUSINESS_OPERATION
         │
         └─── BUSINESS_RULE (1..n)
                     │
-          ┌─────────┼──────────────┬──────────────┐
-          │         │              │              │
-      CONDITION  FORMULA    POLICY_BRANCH   LOOKUP_REF
-          │         │              │              │
-     ┌────┼───┐  ┌──┴──┐     POLICY_CASE    DATA_INPUT
-     │    │   │  │     │          │          CONSTANT
- CONDITION │ ACTION  DATA_  FORMULA   BUSINESS_RULE
-(AND/OR)   │  │      INPUT  CONSTANT
-     then/else branch
+     ┌──────────────┼──────────────┬──────────────┬──────────────┐
+     │              │              │              │              │
+ CURSOR_SCOPE   CONDITION     FORMULA    POLICY_BRANCH   LOOKUP_REF
+ (optional)        │            │              │              │
+  ┌──┴──┐     ┌────┼───┐    ┌──┴──┐     POLICY_CASE    DATA_INPUT
+filter fields │    │   │    │     │     (when_type)     CONSTANT
+  │      │  CONDITION │   DATA_  wrapper_fn
+CONDITION  │  (AND/OR) │   INPUT  wrapper_args    ┌──────┴──────┐
+DATA_INPUT │           │ CONSTANT              BUSINESS_RULE  CONDITION
+           │      then/else branch              (rule_set)    (optional)
+           │           │
+           │     ┌─────┼─────────────┬──────────────┐
+           │   ACTION  FORMULA  BUSINESS_RULE  POLICY_BRANCH
            │
-      ┌────┴────┐
-  DATA_INPUT  CONSTANT
-  FORMULA (nested)
+      derived_values: [ FORMULA* ]  -- evaluated before children
 ```
 
 ---
@@ -606,7 +681,7 @@ For tooling purposes, the ABRT can be serialised as JSON:
 
 ```json
 {
-  "abrt_version": "1.2",
+  "abrt_version": "1.4",
   "application": "Superannuation Admin System",
   "source_db": "Oracle 7",
   "business_operation": {
@@ -672,6 +747,7 @@ When analysing PL/SQL code to build an ABRT, apply the following process:
 - Map IF conditions to CONDITION nodes
 - Decompose AND/OR compound conditions into child CONDITION trees
 - Identify whether conditions test DATA_INPUTs or FORMULAs
+- When a condition's else/then branch contains further IF logic that constitutes a distinct business rule, reference that rule by ID (`then_branch: BUSINESS_RULE[BR-XXX-NNN]`) rather than embedding it inline. This preserves sequential dependency while keeping rules independently queryable. For example, in a wire transfer procedure where the funds-check rule only applies inside the else-branch of the compliance-check rule, model the funds-check as a separate BUSINESS_RULE and reference it from the else_branch.
 
 ### Step 4 — Extract Formulas
 - Capture arithmetic expressions as FORMULA nodes
@@ -832,7 +908,13 @@ TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
                          BUSINESS_RULE+ }
 
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
+                         derived_values:FORMULA*,
+                         cursor_scope:CURSOR_SCOPE?,
                          (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF)+ }
+
+CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
+                         filter:CONDITION,
+                         fields:DATA_INPUT+ }
 
 CONDITION         ::= { id, label, operator, logical_op,
                          left_operand, right_operand,
@@ -849,12 +931,18 @@ ACTION            ::= { id, action_type, target?,
 
 FORMULA           ::= { id, label, expression, result_type,
                          (DATA_INPUT | CONSTANT | FORMULA)+,
+                         wrapper_fn:( GREATEST | LEAST | NVL | ABS | SIGN )?,
+                         wrapper_args:( CONSTANT | DATA_INPUT | FORMULA )*,
                          ROUNDING_RULE? }
 
-POLICY_BRANCH     ::= { id, label, discriminator:(DATA_INPUT | FORMULA),
+POLICY_BRANCH     ::= { id, label,
+                         discriminator_type:( SIMPLE | SEARCHED ),
+                         discriminator:(DATA_INPUT | FORMULA)?,
+                         bracket_type:( MARGINAL | FLAT | TIERED )?,
                          POLICY_CASE+ }
 
-POLICY_CASE       ::= { when_value, label, CONDITION?, BUSINESS_RULE+ }
+POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
+                         when_value?, label, CONDITION?, BUSINESS_RULE+ }
 
 LOOKUP_REF        ::= { id, label, table_name,
                          key_columns:DATA_INPUT+,
@@ -884,14 +972,17 @@ ABRT
 │         │
 │         └─── BUSINESS_RULE (1..n)
 │                     │
-│           ┌─────────┼──────────────┬──────────────┐
-│           │         │              │              │
-│       CONDITION  FORMULA    POLICY_BRANCH   LOOKUP_REF
+│        ┌────────────┼──────────────┬──────────────┬──────────────┐
+│        │            │              │              │              │
+│   CURSOR_SCOPE  CONDITION     FORMULA    POLICY_BRANCH   LOOKUP_REF
+│   (optional)       │          (+ wrapper_fn)  │
+│    ┌──┴──┐    then/else branch         (discriminator_type,
+│  filter fields      │                   bracket_type)
+│    │      │   ┌─────┼──────────┬──────────┐        │
+│ CONDITION │ ACTION FORMULA  BUS_RULE  POL_BRANCH  POLICY_CASE
+│ DATA_INPUT│                                       (when_type)
 │           │
-│       then/else branch
-│           │
-│     ┌─────┼─────────────┬──────────────┐
-│   ACTION  FORMULA  BUSINESS_RULE  POLICY_BRANCH
+│      derived_values: [ FORMULA* ]
 │
 └── TRIGGER_OPERATION
           │
@@ -900,14 +991,17 @@ ABRT
           │
           └─── BUSINESS_RULE (1..n)
                      │
-           ┌─────────┼──────────────┬──────────────┐
-           │         │              │              │
-       CONDITION  FORMULA    POLICY_BRANCH   LOOKUP_REF
+        ┌────────────┼──────────────┬──────────────┬──────────────┐
+        │            │              │              │              │
+   CURSOR_SCOPE  CONDITION     FORMULA    POLICY_BRANCH   LOOKUP_REF
+   (optional)       │          (+ wrapper_fn)  │
+    ┌──┴──┐    then/else branch         (discriminator_type,
+  filter fields      │                   bracket_type)
+    │      │   ┌─────┼──────────┬──────────┐        │
+ CONDITION │ ACTION FORMULA  BUS_RULE  POL_BRANCH  POLICY_CASE
+ DATA_INPUT│                                       (when_type)
            │
-       then/else branch
-           │
-     ┌─────┼─────────────┬──────────────┐
-   ACTION  FORMULA  BUSINESS_RULE  POLICY_BRANCH
+      derived_values: [ FORMULA* ]
 ```
 
 ---
@@ -922,7 +1016,8 @@ ABRT
 
 ---
 
-*ABRT Specification v1.3 — Superannuation Legacy System Documentation Project*
+*ABRT Specification v1.4 — Superannuation Legacy System Documentation Project*
 *v1.1 adds TRIGGER_OPERATION root node for Oracle database triggers*
 *v1.2 adds optional CONDITION node to POLICY_CASE for IF/ELSIF guard expressions*
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
+*v1.4 adds CURSOR_SCOPE, derived_values, wrapper_fn on FORMULA, discriminator_type/bracket_type on POLICY_BRANCH, when_type on POLICY_CASE, and CALL vs FORMULA guidance*
