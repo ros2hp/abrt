@@ -434,6 +434,23 @@ CREATE TABLE abrt_lookup_key_column (
 ) ENGINE=InnoDB;
 
 -- ----------------------------------------------------------------------------
+-- RULE_CONSTANT (links business rules to their constants — enables direct
+-- querying of all constants used by a rule without traversing child nodes)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_rule_constant (
+    rule_id         VARCHAR(100)  NOT NULL,
+    constant_id     VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (rule_id, constant_id),
+    CONSTRAINT fk_ruleconst_rule
+        FOREIGN KEY (rule_id) REFERENCES abrt_business_rule(rule_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_ruleconst_const
+        FOREIGN KEY (constant_id) REFERENCES abrt_constant(constant_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
 -- RULE_ACTION (links business rules to direct child ACTION nodes — used
 -- when rule_type = 'ACTION' and the action is an unconditional child)
 -- ----------------------------------------------------------------------------
@@ -493,4 +510,5 @@ CREATE INDEX idx_cscpfld_scope    ON abrt_cursor_scope_field(cursor_scope_id);
 CREATE INDEX idx_derval_rule      ON abrt_derived_value(rule_id);
 CREATE INDEX idx_branch_bracket   ON abrt_policy_branch(bracket_type);
 CREATE INDEX idx_caseact_case     ON abrt_policy_case_action(case_id);
+CREATE INDEX idx_ruleconst_rule    ON abrt_rule_constant(rule_id);
 CREATE INDEX idx_ruleact_rule     ON abrt_rule_action(rule_id);
