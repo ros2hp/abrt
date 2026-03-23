@@ -63,10 +63,13 @@ BUSINESS_RULE
   source_lines:   PL/SQL line range for traceability
   derived_values: [ FORMULA* ]   -- intermediate values evaluated before children (optional)
   cursor_scope:   CURSOR_SCOPE   -- iteration boundary for cursor-based rules (optional)
+  actions:        [ ACTION* ]    -- unconditional imperative outcomes (optional)
   children:       [ CONDITION* | FORMULA* | POLICY_BRANCH* | LOOKUP_REF* | DATA_INPUT* ]
 ```
 
 **`derived_values`** — When a rule computes intermediate values before its main logic (e.g., `v_days_overdue := TRUNC(SYSDATE - v_due_date)`, `v_loyalty_years := TRUNC(MONTHS_BETWEEN(SYSDATE, join_date) / 12)`), those formulas are listed here. Derived values are evaluated in order before conditions and branches, making execution dependencies explicit. Child nodes reference derived values via `REF`.
+
+**`actions`** — When a rule unconditionally performs imperative side effects — DML, procedure calls, error raising — with no condition guarding them, those actions are listed here directly. This avoids the need for dummy always-true conditions or misusing the `formulas` array for side-effecting operations. Actions reached through conditional logic should still use `CONDITION.then_branch` / `else_branch` rather than this array.
 
 **Rule Types:**
 - `CONSTRAINT` — A hard limit or prohibition (e.g., "Contribution must not exceed concessional cap")
@@ -280,7 +283,7 @@ POLICY_CASE
   condition:      CONDITION (optional — structured decomposition of when_value
                              when the case is guarded by a comparison expression
                              such as "p_weight > 50" rather than a simple value match)
-  rule_set:       [ BUSINESS_RULE* ]
+  rule_set:       [ (BUSINESS_RULE | ACTION)* ]
 ```
 
 **Discriminator Types:**
@@ -299,6 +302,8 @@ POLICY_CASE
 - `DEFAULT` — The ELSE/default branch that matches when no other branch does
 
 When a `POLICY_CASE` is derived from an IF/ELSIF branch whose guard is a comparison expression (e.g., `p_weight > 50`, `balance > 1000000`), the parser emits a structured `CONDITION` node on the policy case in addition to the `when_value`. This ensures that the operands, operator, and data types of the guard expression are captured as first-class ABRT elements and can be queried independently — for example, to find all rules that reference a particular DATA_INPUT or to validate that the comparison operator matches business intent.
+
+**ACTION vs BUSINESS_RULE in rule_set:** When a policy branch leads to a straightforward imperative action with no further conditions, calculations, or sub-rules — e.g., a procedure call like `send_notification(...)` — use an `ACTION` node directly in `rule_set` rather than wrapping it in a `BUSINESS_RULE`. A `BUSINESS_RULE` wrapper is only needed when the branch contains its own conditions, formulas, derived values, or nested rules. The `POLICY_CASE` already provides the business context (label, when_type, condition), so a bare `ACTION` loses no semantic information.
 
 ---
 
@@ -395,7 +400,8 @@ BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
                          derived_values:FORMULA*,
                          cursor_scope:CURSOR_SCOPE?,
-                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF)+ }
+                         actions:ACTION*,
+                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF)* }
 
 CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
@@ -427,7 +433,8 @@ POLICY_BRANCH     ::= { id, label,
                          POLICY_CASE+ }
 
 POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
-                         when_value?, label, CONDITION?, BUSINESS_RULE+ }
+                         when_value?, label, CONDITION?,
+                         (BUSINESS_RULE | ACTION)+ }
 
 LOOKUP_REF        ::= { id, label, table_name,
                          key_columns:DATA_INPUT+,
@@ -606,16 +613,16 @@ BUSINESS_OPERATION
         │
         └─── BUSINESS_RULE (1..n)
                     │
-     ┌──────────────┼──────────────┬──────────────┬──────────────┐
-     │              │              │              │              │
- CURSOR_SCOPE   CONDITION     FORMULA    POLICY_BRANCH   LOOKUP_REF
- (optional)        │            │              │              │
+     ┌──────────────┼──────────────┬──────────────┬──────────────┬──────────┐
+     │              │              │              │              │          │
+ CURSOR_SCOPE   CONDITION     FORMULA    POLICY_BRANCH   LOOKUP_REF   ACTION
+ (optional)        │            │              │              │        (direct)
   ┌──┴──┐     ┌────┼───┐    ┌──┴──┐     POLICY_CASE    DATA_INPUT
 filter fields │    │   │    │     │     (when_type)     CONSTANT
-  │      │  CONDITION │   DATA_  wrapper_fn
-CONDITION  │  (AND/OR) │   INPUT  wrapper_args    ┌──────┴──────┐
-DATA_INPUT │           │ CONSTANT              BUSINESS_RULE  CONDITION
-           │      then/else branch              (rule_set)    (optional)
+  │      │  CONDITION │   DATA_  wrapper_fn       │
+CONDITION  │  (AND/OR) │   INPUT  wrapper_args    ┌┴──────────┐
+DATA_INPUT │           │ CONSTANT           BUSINESS_RULE   ACTION
+           │      then/else branch          (rule_set)    (direct)
            │           │
            │     ┌─────┼─────────────┬──────────────┐
            │   ACTION  FORMULA  BUSINESS_RULE  POLICY_BRANCH
@@ -681,7 +688,7 @@ For tooling purposes, the ABRT can be serialised as JSON:
 
 ```json
 {
-  "abrt_version": "1.4",
+  "abrt_version": "1.6",
   "application": "Superannuation Admin System",
   "source_db": "Oracle 7",
   "business_operation": {
@@ -910,7 +917,8 @@ TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
                          derived_values:FORMULA*,
                          cursor_scope:CURSOR_SCOPE?,
-                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF)+ }
+                         actions:ACTION*,
+                         (CONDITION | FORMULA | POLICY_BRANCH | LOOKUP_REF)* }
 
 CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
@@ -942,7 +950,8 @@ POLICY_BRANCH     ::= { id, label,
                          POLICY_CASE+ }
 
 POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
-                         when_value?, label, CONDITION?, BUSINESS_RULE+ }
+                         when_value?, label, CONDITION?,
+                         (BUSINESS_RULE | ACTION)+ }
 
 LOOKUP_REF        ::= { id, label, table_name,
                          key_columns:DATA_INPUT+,
@@ -972,17 +981,18 @@ ABRT
 │         │
 │         └─── BUSINESS_RULE (1..n)
 │                     │
-│        ┌────────────┼──────────────┬──────────────┬──────────────┐
-│        │            │              │              │              │
-│   CURSOR_SCOPE  CONDITION     FORMULA    POLICY_BRANCH   LOOKUP_REF
-│   (optional)       │          (+ wrapper_fn)  │
+│        ┌────────────┼──────────────┬──────────────┬──────────────┬──────────┐
+│        │            │              │              │              │          │
+│   CURSOR_SCOPE  CONDITION     FORMULA    POLICY_BRANCH   LOOKUP_REF   ACTION
+│   (optional)       │          (+ wrapper_fn)  │                       (direct)
 │    ┌──┴──┐    then/else branch         (discriminator_type,
 │  filter fields      │                   bracket_type)
 │    │      │   ┌─────┼──────────┬──────────┐        │
 │ CONDITION │ ACTION FORMULA  BUS_RULE  POL_BRANCH  POLICY_CASE
 │ DATA_INPUT│                                       (when_type)
-│           │
-│      derived_values: [ FORMULA* ]
+│           │                                    ┌──┴──────┐
+│      derived_values: [ FORMULA* ]         BUS_RULE    ACTION
+│                                           (rule_set)  (direct)
 │
 └── TRIGGER_OPERATION
           │
@@ -991,15 +1001,18 @@ ABRT
           │
           └─── BUSINESS_RULE (1..n)
                      │
-        ┌────────────┼──────────────┬──────────────┬──────────────┐
-        │            │              │              │              │
-   CURSOR_SCOPE  CONDITION     FORMULA    POLICY_BRANCH   LOOKUP_REF
-   (optional)       │          (+ wrapper_fn)  │
+        ┌────────────┼──────────────┬──────────────┬──────────────┬──────────┐
+        │            │              │              │              │          │
+   CURSOR_SCOPE  CONDITION     FORMULA    POLICY_BRANCH   LOOKUP_REF   ACTION
+   (optional)       │          (+ wrapper_fn)  │                       (direct)
     ┌──┴──┐    then/else branch         (discriminator_type,
   filter fields      │                   bracket_type)
     │      │   ┌─────┼──────────┬──────────┐        │
  CONDITION │ ACTION FORMULA  BUS_RULE  POL_BRANCH  POLICY_CASE
  DATA_INPUT│                                       (when_type)
+           │                                    ┌──┴──────┐
+      derived_values: [ FORMULA* ]         BUS_RULE    ACTION
+                                           (rule_set)  (direct)
            │
       derived_values: [ FORMULA* ]
 ```
@@ -1016,8 +1029,10 @@ ABRT
 
 ---
 
-*ABRT Specification v1.4 — Superannuation Legacy System Documentation Project*
+*ABRT Specification v1.6 — Superannuation Legacy System Documentation Project*
 *v1.1 adds TRIGGER_OPERATION root node for Oracle database triggers*
 *v1.2 adds optional CONDITION node to POLICY_CASE for IF/ELSIF guard expressions*
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
 *v1.4 adds CURSOR_SCOPE, derived_values, wrapper_fn on FORMULA, discriminator_type/bracket_type on POLICY_BRANCH, when_type on POLICY_CASE, and CALL vs FORMULA guidance*
+*v1.5 allows ACTION directly in POLICY_CASE rule_set — eliminates unnecessary BUSINESS_RULE wrappers for simple imperative outcomes*
+*v1.6 adds optional actions array on BUSINESS_RULE for unconditional imperative outcomes; children production becomes (...)* allowing action-only rules*

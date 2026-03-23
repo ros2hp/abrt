@@ -1,5 +1,5 @@
 -- ============================================================================
--- ABRT v1.4 MySQL Schema
+-- ABRT v1.6 MySQL Schema
 -- Relational tables for serialising ABRT JSON to a MySQL database.
 -- ============================================================================
 
@@ -383,6 +383,23 @@ CREATE TABLE abrt_policy_case_rule (
 ) ENGINE=InnoDB;
 
 -- ----------------------------------------------------------------------------
+-- POLICY_CASE_ACTION (links a policy case directly to actions — used when
+-- a branch leads to a simple imperative outcome with no further rules)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_policy_case_action (
+    case_id         INT           NOT NULL,
+    action_id       VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (case_id, action_id),
+    CONSTRAINT fk_caseact_case
+        FOREIGN KEY (case_id) REFERENCES abrt_policy_case(case_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_caseact_action
+        FOREIGN KEY (action_id) REFERENCES abrt_action(action_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
 -- LOOKUP_REF (reference data lookup node)
 -- ----------------------------------------------------------------------------
 CREATE TABLE abrt_lookup_ref (
@@ -413,6 +430,23 @@ CREATE TABLE abrt_lookup_key_column (
         ON DELETE CASCADE,
     CONSTRAINT fk_lkpkey_input
         FOREIGN KEY (data_input_id) REFERENCES abrt_data_input(data_input_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
+-- RULE_ACTION (links business rules directly to unconditional actions —
+-- used when a rule performs imperative side effects with no condition guard)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_rule_action (
+    rule_id         VARCHAR(100)  NOT NULL,
+    action_id       VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (rule_id, action_id),
+    CONSTRAINT fk_ruleact_rule
+        FOREIGN KEY (rule_id) REFERENCES abrt_business_rule(rule_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_ruleact_action
+        FOREIGN KEY (action_id) REFERENCES abrt_action(action_id)
         ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
@@ -458,3 +492,5 @@ CREATE INDEX idx_cscp_rule        ON abrt_cursor_scope(rule_id);
 CREATE INDEX idx_cscpfld_scope    ON abrt_cursor_scope_field(cursor_scope_id);
 CREATE INDEX idx_derval_rule      ON abrt_derived_value(rule_id);
 CREATE INDEX idx_branch_bracket   ON abrt_policy_branch(bracket_type);
+CREATE INDEX idx_caseact_case     ON abrt_policy_case_action(case_id);
+CREATE INDEX idx_ruleact_rule     ON abrt_rule_action(rule_id);
