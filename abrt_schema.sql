@@ -1,5 +1,5 @@
 -- ============================================================================
--- ABRT v1.1 MySQL Schema
+-- ABRT v1.3 MySQL Schema
 -- Relational tables for serialising ABRT JSON to a MySQL database.
 -- ============================================================================
 
@@ -99,10 +99,12 @@ CREATE TABLE abrt_condition (
                     NULL,
     left_type       ENUM('DATA_INPUT','FORMULA','CONSTANT')  NULL,
     left_ref        VARCHAR(100)  NULL,
-    right_type      ENUM('DATA_INPUT','FORMULA','CONSTANT')  NULL,
+    right_type      ENUM('DATA_INPUT','FORMULA','CONSTANT','VALUE_SET')  NULL,
     right_ref       VARCHAR(100)  NULL,
-    then_action     JSON          NULL,
-    else_action     JSON          NULL,
+    then_type       ENUM('ACTION','FORMULA','BUSINESS_RULE','POLICY_BRANCH')  NULL,
+    then_ref        VARCHAR(100)  NULL,
+    else_type       ENUM('ACTION','FORMULA','BUSINESS_RULE','POLICY_BRANCH')  NULL,
+    else_ref        VARCHAR(100)  NULL,
     sort_order      INT           NOT NULL DEFAULT 0,
     CONSTRAINT fk_cond_rule
         FOREIGN KEY (rule_id) REFERENCES abrt_business_rule(rule_id)
@@ -170,6 +172,82 @@ CREATE TABLE abrt_constant (
 ) ENGINE=InnoDB;
 
 -- ----------------------------------------------------------------------------
+-- VALUE_SET (collection leaf node — set of constants for IN / NOT_IN)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_value_set (
+    value_set_id    VARCHAR(100)  NOT NULL PRIMARY KEY,
+    label           VARCHAR(500)  NOT NULL,
+    value_type      ENUM('NUMERIC','STRING','DATE')
+                    NOT NULL,
+    description     TEXT          NULL,
+    review_flag     BOOLEAN       NOT NULL DEFAULT FALSE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
+-- VALUE_SET_MEMBER (links a value set to its constituent constants)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_value_set_member (
+    value_set_id    VARCHAR(100)  NOT NULL,
+    constant_id     VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (value_set_id, constant_id),
+    CONSTRAINT fk_vsmember_set
+        FOREIGN KEY (value_set_id) REFERENCES abrt_value_set(value_set_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_vsmember_const
+        FOREIGN KEY (constant_id) REFERENCES abrt_constant(constant_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
+-- ACTION (imperative outcome of a condition branch)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_action (
+    action_id       VARCHAR(100)  NOT NULL PRIMARY KEY,
+    action_type     ENUM('RAISE_ERROR','UPDATE','INSERT','DELETE',
+                         'CALL','RETURN','ASSIGN')
+                    NOT NULL,
+    target          VARCHAR(500)  NULL,       -- table.column, procedure, or variable
+    error_code      INT           NULL,       -- RAISE_ERROR only
+    message         TEXT          NULL,        -- RAISE_ERROR only
+    value_type      ENUM('CONSTANT','DATA_INPUT','FORMULA')  NULL,
+    value_ref       VARCHAR(100)  NULL,       -- UPDATE, ASSIGN, RETURN value
+    description     TEXT          NULL
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
+-- ACTION_ARGUMENT (named arguments for CALL actions)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_action_argument (
+    action_id       VARCHAR(100)  NOT NULL,
+    argument_name   VARCHAR(128)  NOT NULL,
+    argument_type   ENUM('CONSTANT','DATA_INPUT','FORMULA')
+                    NOT NULL,
+    argument_ref    VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (action_id, argument_name),
+    CONSTRAINT fk_actarg_action
+        FOREIGN KEY (action_id) REFERENCES abrt_action(action_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
+-- ACTION_COLUMN (column mappings for INSERT actions)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_action_column (
+    action_id       VARCHAR(100)  NOT NULL,
+    column_name     VARCHAR(128)  NOT NULL,
+    column_type     ENUM('CONSTANT','DATA_INPUT','FORMULA')
+                    NOT NULL,
+    column_ref      VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (action_id, column_name),
+    CONSTRAINT fk_actcol_action
+        FOREIGN KEY (action_id) REFERENCES abrt_action(action_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
 -- FORMULA_OPERAND (links formulas to their inputs: DATA_INPUT, CONSTANT, or
 -- nested FORMULA)
 -- ----------------------------------------------------------------------------
@@ -192,7 +270,7 @@ CREATE TABLE abrt_policy_branch (
     branch_id           VARCHAR(100)  NOT NULL PRIMARY KEY,
     rule_id             VARCHAR(100)  NOT NULL,
     label               VARCHAR(500)  NOT NULL,
-    discriminator_type  ENUM('DATA_INPUT','SEARCHED_CASE')
+    discriminator_type  ENUM('DATA_INPUT','FORMULA','SEARCHED_CASE')
                         NOT NULL,
     discriminator_ref   VARCHAR(100)  NULL,
     note                TEXT          NULL,
@@ -209,7 +287,7 @@ CREATE TABLE abrt_policy_case (
     branch_id       VARCHAR(100)  NOT NULL,
     priority        INT           NOT NULL,
     label           VARCHAR(500)  NOT NULL,
-    when_type       ENUM('CONSTANT','CONDITION','DEFAULT')
+    when_type       ENUM('CONSTANT','VALUE_SET','CONDITION','DEFAULT')
                     NOT NULL,
     when_ref        VARCHAR(100)  NULL,
     CONSTRAINT fk_case_branch
@@ -298,3 +376,9 @@ CREATE INDEX idx_operand_formula  ON abrt_formula_operand(formula_id);
 CREATE INDEX idx_branch_rule      ON abrt_policy_branch(rule_id);
 CREATE INDEX idx_case_branch      ON abrt_policy_case(branch_id);
 CREATE INDEX idx_constant_review  ON abrt_constant(review_flag);
+CREATE INDEX idx_vsmember_set     ON abrt_value_set_member(value_set_id);
+CREATE INDEX idx_valueset_review  ON abrt_value_set(review_flag);
+CREATE INDEX idx_action_type      ON abrt_action(action_type);
+CREATE INDEX idx_action_target    ON abrt_action(target);
+CREATE INDEX idx_actarg_action    ON abrt_action_argument(action_id);
+CREATE INDEX idx_actcol_action    ON abrt_action_column(action_id);

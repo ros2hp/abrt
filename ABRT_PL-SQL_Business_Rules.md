@@ -88,8 +88,8 @@ CONDITION
   left_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE
   right_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE | VALUE_SET
   children:     [ CONDITION* ]    -- nested AND/OR sub-conditions
-  then_branch:  BUSINESS_RULE | FORMULA | POLICY_BRANCH
-  else_branch:  BUSINESS_RULE | FORMULA | POLICY_BRANCH | NULL
+  then_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH
+  else_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH | NULL
 ```
 
 **Example mapping:**
@@ -243,7 +243,70 @@ When a `POLICY_CASE` is derived from an IF/ELSIF branch whose guard is a compari
 
 ---
 
-### 2.9 LOOKUP_REF (Reference Data Node)
+### 2.9 ACTION (Outcome Node)
+
+Represents an imperative outcome of a condition branch — an operation that the system performs when a condition is met (or not met). While nodes like `BUSINESS_RULE`, `FORMULA`, and `POLICY_BRANCH` describe *further evaluation*, an `ACTION` describes a *side effect*: raising an error, performing DML, calling a procedure, or returning a value.
+
+In PL/SQL, actions correspond to `RAISE_APPLICATION_ERROR`, `INSERT`, `UPDATE`, `DELETE` statements, procedure `CALL`s, `RETURN` statements, and variable assignments that appear inside IF/ELSIF/ELSE or CASE branches.
+
+```
+ACTION
+  id:           unique identifier
+  action_type:  [ RAISE_ERROR | UPDATE | INSERT | DELETE | CALL | RETURN | ASSIGN ]
+  target:       string  -- table.column (DML), procedure name (CALL), or variable (ASSIGN)
+  error_code:   integer (RAISE_ERROR only)
+  message:      string  (RAISE_ERROR only — the error message text)
+  value:        CONSTANT | DATA_INPUT | FORMULA (optional — for UPDATE, ASSIGN, RETURN)
+  arguments:    [ { name, value: DATA_INPUT | CONSTANT } ]  (CALL only)
+  columns:      [ { column_name, value: DATA_INPUT | CONSTANT | FORMULA } ]  (INSERT only)
+  description:  string (optional — business context)
+```
+
+**Action Types:**
+- `RAISE_ERROR` — Aborts execution with an application error (`RAISE_APPLICATION_ERROR`)
+- `UPDATE` — DML update to a table column (e.g., `UPDATE orders SET status = 'SHIPPED'`)
+- `INSERT` — DML insert into a table (e.g., `INSERT INTO audit_log ...`)
+- `DELETE` — DML delete from a table (e.g., `DELETE FROM system_logs ...`)
+- `CALL` — Invoke another procedure or function (e.g., `update_status(p_cust_id, 'AUTO_APPROVE')`)
+- `RETURN` — Return a value from a function
+- `ASSIGN` — Set a local variable to a value (intermediate assignment within a rule)
+
+**Example mappings:**
+
+```sql
+-- RAISE_ERROR
+RAISE_APPLICATION_ERROR(-20001, 'Orders cannot be processed on weekends.');
+```
+Maps to:
+```
+ACTION(action_type=RAISE_ERROR, error_code=-20001,
+       message="Orders cannot be processed on weekends.")
+```
+
+```sql
+-- UPDATE
+UPDATE orders SET status = 'SHIPPED' WHERE id = p_order_id;
+```
+Maps to:
+```
+ACTION(action_type=UPDATE, target="ORDERS.STATUS",
+       value=CONSTANT('SHIPPED'))
+```
+
+```sql
+-- CALL
+update_status(p_cust_id, 'AUTO_APPROVE');
+```
+Maps to:
+```
+ACTION(action_type=CALL, target="UPDATE_STATUS",
+       arguments=[{name="cust_id", value=DATA_INPUT[CUST_ID]},
+                  {name="status",  value=CONSTANT('AUTO_APPROVE')}])
+```
+
+---
+
+### 2.10 LOOKUP_REF (Reference Data Node)
 
 Represents a reference to a lookup table, rate table, or static classification table. Superannuation systems are rich in rate tables (contribution rates, tax brackets, fee schedules, age factors).
 
@@ -274,7 +337,15 @@ BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
 CONDITION         ::= { id, label, operator, logical_op,
                          left_operand, right_operand,
                          CONDITION*,
-                         then_branch, else_branch }
+                         then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
+                         else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
+
+ACTION            ::= { id, action_type, target?,
+                         error_code?, message?,
+                         value:(CONSTANT | DATA_INPUT | FORMULA)?,
+                         arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
+                         columns:[ { column_name, value:(DATA_INPUT | CONSTANT | FORMULA) } ]?,
+                         description? }
 
 FORMULA           ::= { id, label, expression, result_type,
                          (DATA_INPUT | CONSTANT | FORMULA)+,
@@ -299,6 +370,13 @@ CONSTANT          ::= { id, label, value, value_type,
 
 VALUE_SET         ::= { id, label, values:CONSTANT+, value_type,
                          description?, review_flag }
+
+REF               ::= { type, ref:id }
+                       -- Cross-reference to an existing node (DATA_INPUT, CONSTANT,
+                       -- FORMULA, or VALUE_SET) by its id. Used in JSON serialisation
+                       -- to avoid duplicating a node that appears in multiple places
+                       -- within the same ABRT. The referenced node must be fully
+                       -- defined exactly once; all other occurrences use REF.
 ```
 
 ---
@@ -459,14 +537,15 @@ BUSINESS_OPERATION
           │         │              │              │
       CONDITION  FORMULA    POLICY_BRANCH   LOOKUP_REF
           │         │              │              │
-     ┌────┴───┐  ┌──┴──┐     POLICY_CASE    DATA_INPUT
-     │        │  │     │          │          CONSTANT
- CONDITION CONDITION DATA_  FORMULA   BUSINESS_RULE
-(AND/OR)  (AND/OR)  INPUT  CONSTANT
-                │
-           DATA_INPUT
-           CONSTANT
-           FORMULA (nested)
+     ┌────┼───┐  ┌──┴──┐     POLICY_CASE    DATA_INPUT
+     │    │   │  │     │          │          CONSTANT
+ CONDITION │ ACTION  DATA_  FORMULA   BUSINESS_RULE
+(AND/OR)   │  │      INPUT  CONSTANT
+     then/else branch
+           │
+      ┌────┴────┐
+  DATA_INPUT  CONSTANT
+  FORMULA (nested)
 ```
 
 ---
@@ -758,7 +837,15 @@ BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
 CONDITION         ::= { id, label, operator, logical_op,
                          left_operand, right_operand,
                          CONDITION*,
-                         then_branch, else_branch }
+                         then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
+                         else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
+
+ACTION            ::= { id, action_type, target?,
+                         error_code?, message?,
+                         value:(CONSTANT | DATA_INPUT | FORMULA)?,
+                         arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
+                         columns:[ { column_name, value:(DATA_INPUT | CONSTANT | FORMULA) } ]?,
+                         description? }
 
 FORMULA           ::= { id, label, expression, result_type,
                          (DATA_INPUT | CONSTANT | FORMULA)+,
@@ -783,6 +870,10 @@ CONSTANT          ::= { id, label, value, value_type,
 
 VALUE_SET         ::= { id, label, values:CONSTANT+, value_type,
                          description?, review_flag }
+
+REF               ::= { type, ref:id }
+                       -- Cross-reference to an existing node by its id.
+                       -- See Section 3 grammar for full description.
 ```
 
 ### 9.9 Updated Node Relationship Summary
@@ -796,6 +887,11 @@ ABRT
 │           ┌─────────┼──────────────┬──────────────┐
 │           │         │              │              │
 │       CONDITION  FORMULA    POLICY_BRANCH   LOOKUP_REF
+│           │
+│       then/else branch
+│           │
+│     ┌─────┼─────────────┬──────────────┐
+│   ACTION  FORMULA  BUSINESS_RULE  POLICY_BRANCH
 │
 └── TRIGGER_OPERATION
           │
@@ -807,6 +903,11 @@ ABRT
            ┌─────────┼──────────────┬──────────────┐
            │         │              │              │
        CONDITION  FORMULA    POLICY_BRANCH   LOOKUP_REF
+           │
+       then/else branch
+           │
+     ┌─────┼─────────────┬──────────────┐
+   ACTION  FORMULA  BUSINESS_RULE  POLICY_BRANCH
 ```
 
 ---
@@ -821,6 +922,7 @@ ABRT
 
 ---
 
-*ABRT Specification v1.2 — Superannuation Legacy System Documentation Project*
+*ABRT Specification v1.3 — Superannuation Legacy System Documentation Project*
 *v1.1 adds TRIGGER_OPERATION root node for Oracle database triggers*
 *v1.2 adds optional CONDITION node to POLICY_CASE for IF/ELSIF guard expressions*
+*v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
