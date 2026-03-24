@@ -400,6 +400,23 @@ CREATE TABLE abrt_policy_case_action (
 ) ENGINE=InnoDB;
 
 -- ----------------------------------------------------------------------------
+-- POLICY_CASE_FORMULA (links a policy case directly to formulas — used when
+-- a branch leads to a calculation with no further conditions or sub-rules)
+-- ----------------------------------------------------------------------------
+CREATE TABLE abrt_policy_case_formula (
+    case_id         INT           NOT NULL,
+    formula_id      VARCHAR(100)  NOT NULL,
+    sort_order      INT           NOT NULL DEFAULT 0,
+    PRIMARY KEY (case_id, formula_id),
+    CONSTRAINT fk_caseform_case
+        FOREIGN KEY (case_id) REFERENCES abrt_policy_case(case_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_caseform_formula
+        FOREIGN KEY (formula_id) REFERENCES abrt_formula(formula_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ----------------------------------------------------------------------------
 -- LOOKUP_REF (reference data lookup node)
 -- ----------------------------------------------------------------------------
 CREATE TABLE abrt_lookup_ref (
@@ -510,5 +527,6 @@ CREATE INDEX idx_cscpfld_scope    ON abrt_cursor_scope_field(cursor_scope_id);
 CREATE INDEX idx_derval_rule      ON abrt_derived_value(rule_id);
 CREATE INDEX idx_branch_bracket   ON abrt_policy_branch(bracket_type);
 CREATE INDEX idx_caseact_case     ON abrt_policy_case_action(case_id);
+CREATE INDEX idx_caseform_case    ON abrt_policy_case_formula(case_id);
 CREATE INDEX idx_ruleconst_rule    ON abrt_rule_constant(rule_id);
 CREATE INDEX idx_ruleact_rule     ON abrt_rule_action(rule_id);

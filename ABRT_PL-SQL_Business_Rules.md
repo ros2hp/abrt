@@ -286,7 +286,7 @@ POLICY_CASE
   condition:      CONDITION (optional — structured decomposition of when_value
                              when the case is guarded by a comparison expression
                              such as "p_weight > 50" rather than a simple value match)
-  rule_set:       [ (BUSINESS_RULE | ACTION)* ]
+  rule_set:       [ (BUSINESS_RULE | ACTION | FORMULA)* ]
 ```
 
 **Discriminator Types:**
@@ -306,7 +306,11 @@ POLICY_CASE
 
 When a `POLICY_CASE` is derived from an IF/ELSIF branch whose guard is a comparison expression (e.g., `p_weight > 50`, `balance > 1000000`), the parser emits a structured `CONDITION` node on the policy case in addition to the `when_value`. This ensures that the operands, operator, and data types of the guard expression are captured as first-class ABRT elements and can be queried independently — for example, to find all rules that reference a particular DATA_INPUT or to validate that the comparison operator matches business intent.
 
-**ACTION vs BUSINESS_RULE in rule_set:** When a policy branch leads to a straightforward imperative action with no further conditions, calculations, or sub-rules — e.g., a procedure call like `send_notification(...)` — use an `ACTION` node directly in `rule_set` rather than wrapping it in a `BUSINESS_RULE`. A `BUSINESS_RULE` wrapper is only needed when the branch contains its own conditions, formulas, derived values, or nested rules. The `POLICY_CASE` already provides the business context (label, when_type, condition), so a bare `ACTION` loses no semantic information.
+**Direct nodes in rule_set:** When a policy branch leads to a single outcome with no further conditions or sub-rules, use the node directly in `rule_set` rather than wrapping it in a `BUSINESS_RULE`:
+- **`ACTION`** — for imperative side effects (procedure calls, DML, error raising), e.g., `send_notification(...)`
+- **`FORMULA`** — for calculations or value derivations, e.g., `order_total * 0.15`
+
+A `BUSINESS_RULE` wrapper is only needed when the branch contains its own conditions, derived values, nested rules, or a mix of formulas and actions. The `POLICY_CASE` already provides the business context (label, when_type, condition), so bare `ACTION` and `FORMULA` nodes lose no semantic information.
 
 ---
 
@@ -441,7 +445,7 @@ POLICY_BRANCH     ::= { id, label,
 
 POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
                          when_value?, label, CONDITION?,
-                         (BUSINESS_RULE | ACTION)+ }
+                         (BUSINESS_RULE | ACTION | FORMULA)+ }
 
 LOOKUP_REF        ::= { id, label, table_name,
                          key_columns:DATA_INPUT+,
@@ -627,9 +631,9 @@ BUSINESS_OPERATION
   ┌──┴──┐     ┌────┼───┐    ┌──┴──┐     POLICY_CASE    DATA_INPUT
 filter fields │    │   │    │     │     (when_type)     CONSTANT
   │      │  CONDITION │   DATA_  wrapper_fn       │
-CONDITION  │  (AND/OR) │   INPUT  wrapper_args    ┌┴──────────┐
-DATA_INPUT │           │ CONSTANT           BUSINESS_RULE   ACTION
-           │      then/else branch          (rule_set)    (direct)
+CONDITION  │  (AND/OR) │   INPUT  wrapper_args    ┌──┴───────────────┐
+DATA_INPUT │           │ CONSTANT           BUSINESS_RULE  ACTION  FORMULA
+           │      then/else branch          (rule_set)   (direct) (direct)
            │           │
            │     ┌─────┼─────────────┬──────────────┐
            │   ACTION  FORMULA  BUSINESS_RULE  POLICY_BRANCH
@@ -962,7 +966,7 @@ POLICY_BRANCH     ::= { id, label,
 
 POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
                          when_value?, label, CONDITION?,
-                         (BUSINESS_RULE | ACTION)+ }
+                         (BUSINESS_RULE | ACTION | FORMULA)+ }
 
 LOOKUP_REF        ::= { id, label, table_name,
                          key_columns:DATA_INPUT+,
@@ -1002,8 +1006,8 @@ ABRT
 │ CONDITION │ ACTION FORMULA  BUS_RULE  POL_BRANCH  POLICY_CASE
 │ DATA_INPUT│                                       (when_type)
 │           │                                    ┌──┴──────┐
-│      derived_values: [ FORMULA* ]         BUS_RULE    ACTION
-│                                           (rule_set)  (direct)
+│      derived_values: [ FORMULA* ]      BUS_RULE  ACTION  FORMULA
+│                                        (rule_set)
 │
 └── TRIGGER_OPERATION
           │
@@ -1022,8 +1026,8 @@ ABRT
  CONDITION │ ACTION FORMULA  BUS_RULE  POL_BRANCH  POLICY_CASE
  DATA_INPUT│                                       (when_type)
            │                                    ┌──┴──────┐
-      derived_values: [ FORMULA* ]         BUS_RULE    ACTION
-                                           (rule_set)  (direct)
+      derived_values: [ FORMULA* ]      BUS_RULE  ACTION  FORMULA
+                                        (rule_set)
            │
       derived_values: [ FORMULA* ]
 ```
@@ -1046,4 +1050,4 @@ ABRT
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
 *v1.4 adds CURSOR_SCOPE, derived_values, wrapper_fn on FORMULA, discriminator_type/bracket_type on POLICY_BRANCH, when_type on POLICY_CASE, and CALL vs FORMULA guidance*
 *v1.5 allows ACTION directly in POLICY_CASE rule_set — eliminates unnecessary BUSINESS_RULE wrappers for simple imperative outcomes*
-*v1.6 adds ACTION to BUSINESS_RULE rule_type enum and typed child arrays; replaces abstract `children` grouping with explicit typed attributes (conditions, formulas, policy_branch, lookup_ref, actions, data_inputs) matching JSON serialization*
+*v1.6 adds ACTION to BUSINESS_RULE rule_type enum and typed child arrays; replaces abstract `children` grouping with explicit typed attributes (conditions, formulas, policy_branch, lookup_ref, actions, data_inputs) matching JSON serialization; adds FORMULA to POLICY_CASE rule_set for direct calculation outcomes*
