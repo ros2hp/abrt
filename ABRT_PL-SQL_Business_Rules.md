@@ -799,7 +799,7 @@ Not all code within a procedure constitutes a business rule. Before extracting r
 - **Lock management** — acquiring and releasing advisory or row-level locks
 - **Error recovery** — generic `WHEN OTHERS` exception handlers that log and re-raise
 
-Focus extraction on code blocks annotated with `-- EMBEDDED RULE:` comments, or code that enforces constraints, makes policy decisions, calculates business values, or triggers business-meaningful side effects.
+Focus extraction on code that enforces constraints, makes policy decisions, calculates business values, or triggers business-meaningful side effects. Comments such as `-- EMBEDDED RULE:` may be present as hints but cannot be presumed — legacy code rarely annotates its business rules explicitly.
 
 ### Step 1 — Identify the Business Operation
 - Name and type the stored procedure/function

@@ -18,7 +18,7 @@ PROCEDURE process_claim_settlement (p_claim_id IN NUMBER) IS
   v_retry_count      NUMBER := 0;
   v_lock_acquired    BOOLEAN := FALSE;
 BEGIN
-  -- *** Internal processing: acquire advisory lock to prevent concurrent settlement ***
+  --  acquire advisory lock to prevent concurrent settlement ***
   WHILE v_retry_count < 3 AND NOT v_lock_acquired LOOP
     BEGIN
       SELECT claim_id INTO v_claim_status
@@ -35,7 +35,7 @@ BEGIN
     RAISE_APPLICATION_ERROR(-20050, 'Unable to acquire lock on claim record.');
   END IF;
 
-  -- *** Internal processing: fetch claim and policy details ***
+  --  fetch claim and policy details ***
   SELECT c.status, c.claim_amount, c.policy_id, c.claimant_id,
          p.policy_type, p.coverage_limit, p.deductible
     INTO v_claim_status, v_claim_amount, v_policy_id, v_claimant_id,
@@ -44,7 +44,7 @@ BEGIN
     JOIN policies p ON c.policy_id = p.id
    WHERE c.id = p_claim_id;
 
-  -- *** Internal processing: assign assessor using round-robin from available pool ***
+  --  assign assessor using round-robin from available pool ***
   SELECT assessor_id INTO v_assessor_id
     FROM (
       SELECT assessor_id, ROW_NUMBER() OVER (ORDER BY last_assigned_date ASC) rn
@@ -54,7 +54,7 @@ BEGIN
 
   UPDATE assessors SET last_assigned_date = SYSDATE WHERE assessor_id = v_assessor_id;
 
-  -- EMBEDDED RULE: Claim must be in ASSESSED status and amount must not exceed coverage limit minus deductible
+  -- Claim must be in ASSESSED status and amount must not exceed coverage limit minus deductible
   IF v_claim_status != 'ASSESSED' THEN
     RAISE_APPLICATION_ERROR(-20051, 'Claim must be fully assessed before settlement.');
   END IF;
@@ -67,18 +67,18 @@ BEGIN
     RETURN;
   END IF;
 
-  -- *** Internal processing: generate payment reference and get next batch ***
+  --  generate payment reference and get next batch ***
   v_payment_ref := 'PAY-' || TO_CHAR(SYSDATE, 'YYYYMMDD') || '-' || LPAD(claim_payment_seq.NEXTVAL, 8, '0');
 
   SELECT NVL(MAX(batch_id), 0) + 1 INTO v_batch_id
     FROM settlement_batches WHERE batch_date = TRUNC(SYSDATE);
 
-  -- *** Internal processing: log the settlement attempt for audit trail ***
+  --  log the settlement attempt for audit trail ***
   INSERT INTO settlement_audit_log (claim_id, assessor_id, action, action_date, details)
   VALUES (p_claim_id, v_assessor_id, 'SETTLEMENT_INITIATED', SYSDATE,
           'Amount: ' || TO_CHAR(v_settlement_amt, 'FM$999,999,990.00'));
 
-  -- EMBEDDED RULE: Settlements over $50,000 require senior approval; under that amount are auto-approved
+  -- Settlements over $50,000 require senior approval; under that amount are auto-approved
   IF v_settlement_amt > 50000 THEN
     UPDATE claims
        SET status = 'PENDING_SENIOR_APPROVAL',
@@ -104,7 +104,7 @@ BEGIN
     VALUES (v_payment_ref, p_claim_id, v_claimant_id, v_settlement_amt, SYSDATE, v_batch_id, 'QUEUED');
   END IF;
 
-  -- *** Internal processing: release advisory lock ***
+  --  release advisory lock ***
   DELETE FROM claim_locks WHERE claim_id = p_claim_id;
 
   COMMIT;
