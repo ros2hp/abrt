@@ -323,24 +323,26 @@ In PL/SQL, actions correspond to `RAISE_APPLICATION_ERROR`, `INSERT`, `UPDATE`, 
 ```
 ACTION
   id:           unique identifier
-  action_type:  [ RAISE_ERROR | UPDATE | INSERT | DELETE | CALL | RETURN | ASSIGN ]
+  action_type:  [ RAISE_ERROR | UPDATE | INSERT | DELETE | CALL | RETURN | ASSIGN | COMPOSITE ]
   target:       string  -- table.column (DML), procedure name (CALL), or variable (ASSIGN)
   error_code:   integer (RAISE_ERROR only)
   message:      string  (RAISE_ERROR only — the error message text)
-  value:        CONSTANT | DATA_INPUT | FORMULA (optional — for UPDATE, ASSIGN, RETURN)
+  value:        CONSTANT | DATA_INPUT | FORMULA (optional — for single-column UPDATE, ASSIGN, RETURN)
   arguments:    [ { name, value: DATA_INPUT | CONSTANT } ]  (CALL only)
-  columns:      [ { column_name, value: DATA_INPUT | CONSTANT | FORMULA } ]  (INSERT only)
+  columns:      [ { column_name, value: DATA_INPUT | CONSTANT | FORMULA } ]  (INSERT or multi-column UPDATE)
+  steps:        [ ACTION+ ]  (COMPOSITE only — ordered list of sub-actions)
   description:  string (optional — business context)
 ```
 
 **Action Types:**
 - `RAISE_ERROR` — Aborts execution with an application error (`RAISE_APPLICATION_ERROR`)
-- `UPDATE` — DML update to a table column (e.g., `UPDATE orders SET status = 'SHIPPED'`)
+- `UPDATE` — DML update to a table. For single-column updates, use `target` (table.column) and `value`. For multi-column updates, use `target` (table name) and `columns` array — same structure as INSERT.
 - `INSERT` — DML insert into a table (e.g., `INSERT INTO audit_log ...`)
 - `DELETE` — DML delete from a table (e.g., `DELETE FROM system_logs ...`)
 - `CALL` — Invoke another procedure or function (e.g., `update_status(p_cust_id, 'AUTO_APPROVE')`)
 - `RETURN` — Return a value from a function
 - `ASSIGN` — Set a local variable to a value (intermediate assignment within a rule)
+- `COMPOSITE` — An ordered sequence of sub-actions that execute together as a single business outcome. Use this when a condition branch leads to multiple DML statements or calls that collectively implement one business decision. The `steps` array contains the individual ACTION nodes in execution order. Each step has its own `id` (conventionally the parent's id with a letter suffix, e.g., `ACT_XXX_001A`, `ACT_XXX_001B`).
 
 **Guidance — CALL vs FORMULA:** When a PL/SQL branch body is a procedure call (e.g., `send_notification(member_id, email, 'URGENT_RENEWAL')`), model it as `ACTION(action_type=CALL)`, not as a FORMULA. FORMULAs are pure calculations that return a value with no side effects; ACTIONs are side-effecting operations. A procedure call that sends a notification, writes to a queue, or updates external state is always an ACTION, even if it happens to return a value.
 
@@ -375,6 +377,34 @@ Maps to:
 ACTION(action_type=CALL, target="UPDATE_STATUS",
        arguments=[{name="cust_id", value=DATA_INPUT[CUST_ID]},
                   {name="status",  value=CONSTANT('AUTO_APPROVE')}])
+```
+
+```sql
+-- COMPOSITE (multiple DML in one branch)
+IF v_settlement_amt > 50000 THEN
+    UPDATE claims SET status = 'PENDING_SENIOR_APPROVAL', settlement_amount = v_settlement_amt WHERE id = p_claim_id;
+    INSERT INTO approval_queue (claim_id, approval_type, requested_amount, status)
+    VALUES (p_claim_id, 'SENIOR_SETTLEMENT', v_settlement_amt, 'PENDING');
+END IF;
+```
+Maps to:
+```
+ACTION(action_type=COMPOSITE, description="Flag for senior approval and queue")
+  ├── steps[0]: ACTION(action_type=UPDATE, target="CLAIMS", columns=[...])
+  └── steps[1]: ACTION(action_type=INSERT, target="APPROVAL_QUEUE", columns=[...])
+```
+
+```sql
+-- Multi-column UPDATE
+UPDATE claims SET status = 'DENIED', denial_reason = 'Claim within deductible', updated_date = SYSDATE
+ WHERE id = p_claim_id;
+```
+Maps to:
+```
+ACTION(action_type=UPDATE, target="CLAIMS",
+       columns=[{column_name="STATUS", value=CONSTANT('DENIED')},
+                {column_name="DENIAL_REASON", value=CONSTANT('Claim within deductible')},
+                {column_name="UPDATED_DATE", value=DATA_INPUT[SYSDATE]}])
 ```
 
 ---
@@ -429,6 +459,7 @@ ACTION            ::= { id, action_type, target?,
                          value:(CONSTANT | DATA_INPUT | FORMULA)?,
                          arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
                          columns:[ { column_name, value:(DATA_INPUT | CONSTANT | FORMULA) } ]?,
+                         steps:[ ACTION+ ]?,
                          description? }
 
 FORMULA           ::= { id, label, expression, result_type,
@@ -468,6 +499,14 @@ REF               ::= { type, ref:id }
                        -- to avoid duplicating a node that appears in multiple places
                        -- within the same ABRT. The referenced node must be fully
                        -- defined exactly once; all other occurrences use REF.
+                       --
+                       -- Cross-rule references: A REF may point to a node defined in
+                       -- a different BUSINESS_RULE within the same operation. This is
+                       -- common when a formula computed in one rule (e.g., settlement
+                       -- amount) is consumed by a subsequent rule (e.g., approval
+                       -- threshold check). The defining rule owns the full node; the
+                       -- consuming rule uses REF. This creates an implicit dependency
+                       -- ordering between the two rules.
 ```
 
 ---
@@ -750,6 +789,18 @@ For tooling purposes, the ABRT can be serialised as JSON:
 
 When analysing PL/SQL code to build an ABRT, apply the following process:
 
+### Step 0 — Separate Business Logic from Infrastructure Code
+Not all code within a procedure constitutes a business rule. Before extracting rules, identify and exclude **infrastructure/implementation logic** that serves the procedure's technical operation but carries no business meaning. Common patterns to exclude:
+- **Concurrency control** — advisory locks, `FOR UPDATE NOWAIT`, retry loops, `DBMS_LOCK.SLEEP`
+- **Audit/tracing** — logging inserts for operational observability (unless audit logging *is* the business rule, as in trigger-based audit trails)
+- **Resource assignment** — round-robin or load-balancing logic for assigning workers/assessors
+- **Identifier generation** — sequence-based reference numbers, batch ID calculation, string formatting
+- **Transaction control** — `COMMIT`, `ROLLBACK`, `SAVEPOINT`
+- **Lock management** — acquiring and releasing advisory or row-level locks
+- **Error recovery** — generic `WHEN OTHERS` exception handlers that log and re-raise
+
+Focus extraction on code blocks annotated with `-- EMBEDDED RULE:` comments, or code that enforces constraints, makes policy decisions, calculates business values, or triggers business-meaningful side effects.
+
 ### Step 1 — Identify the Business Operation
 - Name and type the stored procedure/function
 - Read any header comments for business context
@@ -950,6 +1001,7 @@ ACTION            ::= { id, action_type, target?,
                          value:(CONSTANT | DATA_INPUT | FORMULA)?,
                          arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
                          columns:[ { column_name, value:(DATA_INPUT | CONSTANT | FORMULA) } ]?,
+                         steps:[ ACTION+ ]?,
                          description? }
 
 FORMULA           ::= { id, label, expression, result_type,
@@ -1044,10 +1096,11 @@ ABRT
 
 ---
 
-*ABRT Specification v1.6 — Superannuation Legacy System Documentation Project*
+*ABRT Specification v1.7 — Superannuation Legacy System Documentation Project*
 *v1.1 adds TRIGGER_OPERATION root node for Oracle database triggers*
 *v1.2 adds optional CONDITION node to POLICY_CASE for IF/ELSIF guard expressions*
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
 *v1.4 adds CURSOR_SCOPE, derived_values, wrapper_fn on FORMULA, discriminator_type/bracket_type on POLICY_BRANCH, when_type on POLICY_CASE, and CALL vs FORMULA guidance*
 *v1.5 allows ACTION directly in POLICY_CASE rule_set — eliminates unnecessary BUSINESS_RULE wrappers for simple imperative outcomes*
 *v1.6 adds ACTION to BUSINESS_RULE rule_type enum and typed child arrays; replaces abstract `children` grouping with explicit typed attributes (conditions, formulas, policy_branch, lookup_ref, actions, data_inputs) matching JSON serialization; adds FORMULA to POLICY_CASE rule_set for direct calculation outcomes*
+*v1.7 adds COMPOSITE action_type with `steps` array for multi-action branch outcomes; extends `columns` attribute to multi-column UPDATE actions; adds cross-rule REF guidance; adds extraction Step 0 for separating business logic from infrastructure code*
