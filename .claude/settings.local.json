@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(plsql_abrt_parser/target/debug/plsql_abrt_parser)",
+      "Bash(cargo test:*)",
+      "Bash(python3:*)",
+      "mcp__awslabs_mysql-mcp-server__run_query",
+      "Bash(jq:*)",
+      "mcp__awslabs_mysql-mcp-server__get_table_schema",
+      "Bash(rustc br7_rules.rs -o br7_rules --edition 2021)",
+      "Bash(./br7_rules)",
+      "Bash(rustc --test br7_rules.rs -o br7_rules_test --edition 2021)",
+      "Bash(./br7_rules_test)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "awslabs.mysql-mcp-server",
+    "mcp-mermaid"
+  ]
+}
