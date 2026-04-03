@@ -1,8 +1,8 @@
-# Claude Code development of ABRT (Abstract Business Rule Tree) based on a program language AST concept
+# README for ABRT (Abstract Business Rule Tree) 
 
 ## Purpose
-extract Business Rules (BRs) from Oracle PL/SQL code objects in the database.
-It has also been extended to extract BRs from Oracle Forms code
+extract Business Rules (BRs) from Oracle PL/SQL code.
+There is also a version that extracts BRs from Oracle Forms 3 code
 
 ## MCP 
 - Installed AWS MySQL MCP (see .mcp.json)
@@ -30,3 +30,7 @@ It has also been extended to extract BRs from Oracle Forms code
   
 ## Database
 - AWS MySQL - database rulesdb. See environment variables MYSQL*
+
+## Extract skill
+
+
