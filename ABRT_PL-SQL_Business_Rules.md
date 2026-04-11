@@ -119,30 +119,152 @@ CURSOR_SCOPE
 
 ### 2.4 CONDITION (Branch Node)
 
-Represents a conditional branch within a business rule. Derived from IF / ELSIF / CASE / DECODE constructs in PL/SQL. Conditions form a tree of their own — AND/OR compositions are explicit child nodes.
+Represents a conditional branch within a business rule. Derived from IF / ELSIF / CASE / DECODE constructs in PL/SQL.
+
+A CONDITION node takes one of two **exclusive forms**. The form is determined by whether the node is a leaf comparison or a compound logical junction. These two forms must not be mixed on a single node.
+
+---
+
+#### Form 1 — Leaf Comparison
+
+A leaf comparison evaluates a single predicate: one left operand compared to one right operand via a comparison operator. It holds no children.
 
 ```
-CONDITION
-  id:           unique identifier
-  label:        plain English condition description
-  operator:     [ EQ | NEQ | GT | GTE | LT | LTE | IN | NOT_IN | IS_NULL | IS_NOT_NULL | BETWEEN ]
-  logical_op:   [ AND | OR | NOT | NONE ]  -- how this combines with siblings
-  left_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE
-  right_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE | VALUE_SET
-  conditions:   [ CONDITION* ]    -- nested AND/OR sub-conditions
-  then_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH
-  else_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH | NULL
+CONDITION (leaf)
+  id:            unique identifier
+  label:         plain English condition description
+  operator:      [ EQ | NEQ | GT | GTE | LT | LTE | IN | NOT_IN | IS_NULL | IS_NOT_NULL | BETWEEN ]
+  logical_op:    NONE          -- a leaf does not combine with siblings; always NONE
+  left_operand:  DATA_INPUT | CONSTANT | FORMULA
+  right_operand: DATA_INPUT | CONSTANT | FORMULA | VALUE_SET
+  conditions:    []            -- always empty; leaf nodes have no children
+  then_branch:   (absent)      -- then/else are placed on the enclosing COMPOUND, not on leaves
+  else_branch:   (absent)
 ```
 
-**Example mapping:**
+**Constraints:**
+- `operator` must be a comparison operator value from the enum above
+- `logical_op` must be `NONE`
+- `left_operand` and `right_operand` must both be present
+- `conditions` must be empty (`[]`)
+- `then_branch` and `else_branch` must be absent or null
+
+---
+
+#### Form 2 — Compound Logical Junction
+
+A compound junction combines two or more child CONDITION nodes via a logical operator. It carries no comparison of its own.
+
+```
+CONDITION (compound)
+  id:            unique identifier
+  label:         plain English description of the combined condition
+  operator:      null          -- a compound has no direct comparison operator
+  logical_op:    [ AND | OR | NOT ]
+  left_operand:  null          -- absent; the comparison lives in the child nodes
+  right_operand: null          -- absent
+  conditions:    [ CONDITION+ ] -- two or more leaf or compound children (one for NOT)
+  then_branch:   ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH
+  else_branch:   ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH | null
+```
+
+**Constraints:**
+- `operator` must be `null`
+- `left_operand` and `right_operand` must be `null`
+- `logical_op` must be `AND`, `OR`, or `NOT`
+- `conditions` must contain at least two children (`NOT` requires exactly one)
+- `then_branch` and `else_branch` are placed on the compound node, not on its leaf children
+
+---
+
+**The key rule — `operator` and `logical_op` are mutually exclusive roles:**
+A node that carries a comparison operator (`EQ`, `LT`, etc.) is a leaf and must have `logical_op: NONE`. A node that carries a logical junction (`AND`, `OR`, `NOT`) is a compound and must have `operator: null`. Setting both `operator: "LT"` and `logical_op: "AND"` on the same node is a grammar error.
+
+---
+
+#### Examples
+
+**Single leaf condition:**
 ```sql
-IF v_age >= 65 AND v_status = 'ACTIVE' THEN ...
+IF v_status != 'PAID' THEN
+  RAISE_APPLICATION_ERROR(-20002, 'Cannot ship unpaid orders.');
+END IF;
 ```
 Maps to:
 ```
-CONDITION(logical_op=AND)
-  ├── CONDITION(left=AGE, op=GTE, right=CONSTANT(65))
-  └── CONDITION(left=MEMBER_STATUS, op=EQ, right=CONSTANT('ACTIVE'))
+CONDITION (leaf)
+  operator:      NEQ
+  logical_op:    NONE
+  left_operand:  DATA_INPUT[ORDER_STATUS]
+  right_operand: CONSTANT('PAID')
+  conditions:    []
+  then_branch:   ACTION(RAISE_ERROR, -20002)
+  else_branch:   null
+```
+
+**Compound AND — two comparisons joined by AND:**
+```sql
+IF :NEW.quantity_on_hand < :NEW.reorder_point
+   AND :OLD.quantity_on_hand >= :OLD.reorder_point THEN
+  INSERT INTO purchase_orders ...;
+END IF;
+```
+Maps to:
+```
+CONDITION (compound, logical_op=AND)          ← then_branch lives here
+  operator:      null
+  left_operand:  null
+  right_operand: null
+  conditions: [
+    CONDITION (leaf)                           ← no then/else on leaves
+      operator: LT,  logical_op: NONE
+      left_operand:  DATA_INPUT[INVENTORY.QUANTITY_ON_HAND (:NEW)]
+      right_operand: DATA_INPUT[INVENTORY.REORDER_POINT (:NEW)]
+    ,
+    CONDITION (leaf)
+      operator: GTE, logical_op: NONE
+      left_operand:  DATA_INPUT[INVENTORY.QUANTITY_ON_HAND (:OLD)]
+      right_operand: DATA_INPUT[INVENTORY.REORDER_POINT (:OLD)]
+  ]
+  then_branch: ACTION(INSERT into PURCHASE_ORDERS)
+  else_branch: null
+```
+
+**Nested compound — AND containing a nested AND:**
+```sql
+IF v_hours_worked > 40
+   AND v_dept != 'EXECUTIVE'
+   AND v_salary_grade < 15 THEN
+  UPDATE payroll ...;
+END IF;
+```
+Maps to:
+```
+CONDITION (compound, logical_op=AND)
+  conditions: [
+    CONDITION (leaf, op=GT)   left=HOURS_WORKED,  right=CONSTANT(40)
+    CONDITION (leaf, op=NEQ)  left=DEPARTMENT,    right=CONSTANT('EXECUTIVE')
+    CONDITION (leaf, op=LT)   left=SALARY_GRADE,  right=CONSTANT(15)
+  ]
+  then_branch: ACTION(UPDATE PAYROLL)
+```
+
+**Compound OR nested inside AND:**
+```sql
+IF v_age < 18 OR (v_status = 'SUSPENDED' AND v_override != 'Y') THEN ...
+```
+Maps to:
+```
+CONDITION (compound, logical_op=OR)
+  conditions: [
+    CONDITION (leaf, op=LT)    left=AGE, right=CONSTANT(18)
+    CONDITION (compound, logical_op=AND)
+      conditions: [
+        CONDITION (leaf, op=EQ)   left=STATUS,   right=CONSTANT('SUSPENDED')
+        CONDITION (leaf, op=NEQ)  left=OVERRIDE, right=CONSTANT('Y')
+      ]
+  ]
+  then_branch: ...
 ```
 
 ---
@@ -448,11 +570,23 @@ CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
                          fields:DATA_INPUT+ }
 
-CONDITION         ::= { id, label, operator, logical_op,
-                         left_operand, right_operand,
-                         conditions:CONDITION*,
-                         then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
-                         else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
+CONDITION         ::= LEAF_CONDITION | COMPOUND_CONDITION
+
+LEAF_CONDITION    ::= { id, label,
+                         operator:(EQ|NEQ|GT|GTE|LT|LTE|IN|NOT_IN|IS_NULL|IS_NOT_NULL|BETWEEN),
+                         logical_op:NONE,
+                         left_operand:(DATA_INPUT | CONSTANT | FORMULA),
+                         right_operand:(DATA_INPUT | CONSTANT | FORMULA | VALUE_SET),
+                         conditions:[] }
+
+COMPOUND_CONDITION ::= { id, label,
+                          operator:null,
+                          logical_op:(AND | OR | NOT),
+                          left_operand:null,
+                          right_operand:null,
+                          conditions:CONDITION+,
+                          then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
+                          else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
 
 ACTION            ::= { id, action_type, target?,
                          error_code?, message?,
@@ -990,11 +1124,23 @@ CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
                          fields:DATA_INPUT+ }
 
-CONDITION         ::= { id, label, operator, logical_op,
-                         left_operand, right_operand,
-                         conditions:CONDITION*,
-                         then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
-                         else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
+CONDITION         ::= LEAF_CONDITION | COMPOUND_CONDITION
+
+LEAF_CONDITION    ::= { id, label,
+                         operator:(EQ|NEQ|GT|GTE|LT|LTE|IN|NOT_IN|IS_NULL|IS_NOT_NULL|BETWEEN),
+                         logical_op:NONE,
+                         left_operand:(DATA_INPUT | CONSTANT | FORMULA),
+                         right_operand:(DATA_INPUT | CONSTANT | FORMULA | VALUE_SET),
+                         conditions:[] }
+
+COMPOUND_CONDITION ::= { id, label,
+                          operator:null,
+                          logical_op:(AND | OR | NOT),
+                          left_operand:null,
+                          right_operand:null,
+                          conditions:CONDITION+,
+                          then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
+                          else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
 
 ACTION            ::= { id, action_type, target?,
                          error_code?, message?,
@@ -1096,7 +1242,7 @@ ABRT
 
 ---
 
-*ABRT Specification v1.7 — Superannuation Legacy System Documentation Project*
+*ABRT Specification v1.8 — Superannuation Legacy System Documentation Project*
 *v1.1 adds TRIGGER_OPERATION root node for Oracle database triggers*
 *v1.2 adds optional CONDITION node to POLICY_CASE for IF/ELSIF guard expressions*
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
@@ -1104,3 +1250,4 @@ ABRT
 *v1.5 allows ACTION directly in POLICY_CASE rule_set — eliminates unnecessary BUSINESS_RULE wrappers for simple imperative outcomes*
 *v1.6 adds ACTION to BUSINESS_RULE rule_type enum and typed child arrays; replaces abstract `children` grouping with explicit typed attributes (conditions, formulas, policy_branch, lookup_ref, actions, data_inputs) matching JSON serialization; adds FORMULA to POLICY_CASE rule_set for direct calculation outcomes*
 *v1.7 adds COMPOSITE action_type with `steps` array for multi-action branch outcomes; extends `columns` attribute to multi-column UPDATE actions; adds cross-rule REF guidance; adds extraction Step 0 for separating business logic from infrastructure code*
+*v1.8 makes CONDITION node forms explicit: LEAF_CONDITION (operator set, logical_op=NONE, no children, no then/else_branch) and COMPOUND_CONDITION (operator=null, logical_op=AND/OR/NOT, children in conditions array) are mutually exclusive — setting both operator and logical_op on the same node is a grammar error*
