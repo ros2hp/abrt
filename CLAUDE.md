@@ -4,7 +4,7 @@
 Extract business rules from legacy PL/SQL code (Oracle 7 / Oracle Forms 3) using the Abstract Business Rule Tree (ABRT) formal model, and generate equivalent Rust implementations.
 
 ## ABRT Specification
-- Current version: **v1.1** (`ABRT_PL-SQL_Business_Rules.md`)
+- Current version: **v1.7** (`ABRT_PL-SQL_Business_Rules.md`)
 - Oracle Forms 3 extension: **v2.0** (`ABRT_Oracle_Forms3_Extension.md`)
 - Always follow the ABRT node taxonomy and grammar defined in these specs
 
