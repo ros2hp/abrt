@@ -83,6 +83,23 @@ BUSINESS_RULE
 - `LOOKUP` — Retrieves a rate or value from a reference table based on criteria
 - `ACTION` — An unconditional imperative side effect: DML, procedure call, error raising, or assignment. Use this rule type when the business rule exists solely to perform an action with no condition guarding it. Actions reached through conditional logic should still use `CONDITION.then_branch` / `else_branch` with ACTION child nodes on the condition, not this rule type.
 
+**Rule Type Field Constraints:**
+
+The `rule_type` value determines which child fields are required and which are prohibited. Validators must enforce these constraints — a field listed as prohibited must be absent or empty; a field listed as required must be present and non-empty.
+
+| `rule_type`   | Required fields                        | Prohibited fields             |
+|---------------|----------------------------------------|-------------------------------|
+| `CONSTRAINT`  | `conditions` (non-empty)               | `policy_branch`               |
+| `FORMULA`     | `formulas` or `derived_values`         | `conditions`, `policy_branch` |
+| `POLICY`      | `policy_branch`                        | `conditions`                  |
+| `ELIGIBILITY` | `conditions` (non-empty)               | `policy_branch`               |
+| `DERIVATION`  | `conditions` or `formulas`             | `policy_branch`               |
+| `ALLOCATION`  | `formulas` or `actions`                | `policy_branch`               |
+| `LOOKUP`      | `lookup_ref`                           | `policy_branch`               |
+| `ACTION`      | `actions` (non-empty)                  | `conditions`, `policy_branch` |
+
+`lookup_ref`, `actions`, `formulas`, and `derived_values` may appear alongside the required fields of any rule type unless explicitly listed as prohibited above.
+
 ---
 
 ### 2.3 CURSOR_SCOPE (Iteration Boundary Node)
@@ -552,9 +569,14 @@ LOOKUP_REF
 ## 3. ABRT Grammar (Formal Notation)
 
 ```
-ABRT              ::= BUSINESS_OPERATION+
+ABRT              ::= ( BUSINESS_OPERATION | TRIGGER_OPERATION )+
 
 BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
+
+TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
+                         trigger_timing, trigger_event, trigger_level,
+                         when_clause?, enabled,
+                         BUSINESS_RULE+ }
 
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
                          derived_values:FORMULA*,
@@ -609,8 +631,8 @@ POLICY_BRANCH     ::= { id, label,
                          POLICY_CASE+ }
 
 POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
-                         when_value?, label, CONDITION?,
-                         (BUSINESS_RULE | ACTION | FORMULA)+ }
+                         when_value?, label, condition:CONDITION?,
+                         rule_set:(BUSINESS_RULE | ACTION | FORMULA)+ }
 
 LOOKUP_REF        ::= { id, label, table_name,
                          key_columns:DATA_INPUT+,
@@ -1098,93 +1120,9 @@ TRIGGER_OPERATION(trigger_event=INSERT, trigger_level=ROW)
 
 ---
 
-### 9.8 Updated ABRT Grammar
+### 9.8 ABRT Grammar
 
-```
-ABRT              ::= ( BUSINESS_OPERATION | TRIGGER_OPERATION )+
-
-BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
-
-TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
-                         trigger_timing, trigger_event, trigger_level,
-                         when_clause?, enabled,
-                         BUSINESS_RULE+ }
-
-BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
-                         derived_values:FORMULA*,
-                         cursor_scope:CURSOR_SCOPE?,
-                         conditions:CONDITION*,
-                         formulas:FORMULA*,
-                         policy_branch:POLICY_BRANCH?,
-                         lookup_ref:LOOKUP_REF?,
-                         actions:ACTION*,
-                         data_inputs:DATA_INPUT* }
-
-CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
-                         filter:CONDITION,
-                         fields:DATA_INPUT+ }
-
-CONDITION         ::= LEAF_CONDITION | COMPOUND_CONDITION
-
-LEAF_CONDITION    ::= { id, label,
-                         operator:(EQ|NEQ|GT|GTE|LT|LTE|IN|NOT_IN|IS_NULL|IS_NOT_NULL|BETWEEN),
-                         logical_op:NONE,
-                         left_operand:(DATA_INPUT | CONSTANT | FORMULA),
-                         right_operand:(DATA_INPUT | CONSTANT | FORMULA | VALUE_SET),
-                         conditions:[] }
-
-COMPOUND_CONDITION ::= { id, label,
-                          operator:null,
-                          logical_op:(AND | OR | NOT),
-                          left_operand:null,
-                          right_operand:null,
-                          conditions:CONDITION+,
-                          then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
-                          else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
-
-ACTION            ::= { id, action_type, target?,
-                         error_code?, message?,
-                         value:(CONSTANT | DATA_INPUT | FORMULA)?,
-                         arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
-                         columns:[ { column_name, value:(DATA_INPUT | CONSTANT | FORMULA) } ]?,
-                         steps:[ ACTION+ ]?,
-                         description? }
-
-FORMULA           ::= { id, label, expression, result_type,
-                         (DATA_INPUT | CONSTANT | FORMULA)+,
-                         wrapper_fn:( GREATEST | LEAST | NVL | ABS | SIGN )?,
-                         wrapper_args:( CONSTANT | DATA_INPUT | FORMULA )*,
-                         ROUNDING_RULE? }
-
-POLICY_BRANCH     ::= { id, label,
-                         discriminator_type:( SIMPLE | SEARCHED ),
-                         discriminator:(DATA_INPUT | FORMULA)?,
-                         bracket_type:( MARGINAL | FLAT | TIERED )?,
-                         POLICY_CASE+ }
-
-POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
-                         when_value?, label, CONDITION?,
-                         (BUSINESS_RULE | ACTION | FORMULA)+ }
-
-LOOKUP_REF        ::= { id, label, table_name,
-                         key_columns:DATA_INPUT+,
-                         result_column, lookup_type,
-                         effective_date_col?,
-                         fallback:CONSTANT? }
-
-DATA_INPUT        ::= { id, label, source_type, source_ref,
-                         data_type, is_key, nullable, default_value? }
-
-CONSTANT          ::= { id, label, value, value_type,
-                         const_type, description, review_flag }
-
-VALUE_SET         ::= { id, label, values:CONSTANT+, value_type,
-                         description?, review_flag }
-
-REF               ::= { type, ref:id }
-                       -- Cross-reference to an existing node by its id.
-                       -- See Section 3 grammar for full description.
-```
+The complete formal grammar, including `TRIGGER_OPERATION`, is defined in **Section 3**. Section 3 is the single authoritative source for all grammar rules.
 
 ### 9.9 Updated Node Relationship Summary
 
@@ -1250,4 +1188,4 @@ ABRT
 *v1.5 allows ACTION directly in POLICY_CASE rule_set — eliminates unnecessary BUSINESS_RULE wrappers for simple imperative outcomes*
 *v1.6 adds ACTION to BUSINESS_RULE rule_type enum and typed child arrays; replaces abstract `children` grouping with explicit typed attributes (conditions, formulas, policy_branch, lookup_ref, actions, data_inputs) matching JSON serialization; adds FORMULA to POLICY_CASE rule_set for direct calculation outcomes*
 *v1.7 adds COMPOSITE action_type with `steps` array for multi-action branch outcomes; extends `columns` attribute to multi-column UPDATE actions; adds cross-rule REF guidance; adds extraction Step 0 for separating business logic from infrastructure code*
-*v1.8 makes CONDITION node forms explicit: LEAF_CONDITION (operator set, logical_op=NONE, no children, no then/else_branch) and COMPOUND_CONDITION (operator=null, logical_op=AND/OR/NOT, children in conditions array) are mutually exclusive — setting both operator and logical_op on the same node is a grammar error*
+*v1.8 makes CONDITION node forms explicit: LEAF_CONDITION (operator set, logical_op=NONE, no children, no then/else_branch) and COMPOUND_CONDITION (operator=null, logical_op=AND/OR/NOT, children in conditions array) are mutually exclusive — setting both operator and logical_op on the same node is a grammar error; adds Rule Type Field Constraints table specifying required and prohibited child fields per rule_type, making rule_type a mechanically validatable structural constraint rather than a semantic label only*
