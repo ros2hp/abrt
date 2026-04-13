@@ -23,7 +23,7 @@ An **Abstract Business Rule Tree (ABRT)** is a structured, hierarchical represen
 
 ## 2. ABRT Node Taxonomy
 
-The ABRT is composed of **ten node categories**, each representing a distinct kind of business rule construct found in PL/SQL code.
+The ABRT is composed of **nine node categories**, each representing a distinct kind of business rule construct found in PL/SQL code.
 
 ---
 
@@ -38,16 +38,7 @@ BUSINESS_OPERATION
   source:       PL/SQL object name (package.procedure)
   operation_type: [ CALCULATION | VALIDATION | PROCESS | QUERY | EVENT ]
   children:     [ BUSINESS_RULE* ]
-  called_by:    [ { business_rule_id, function_node_id }* ]
-                  -- reverse index populated during the two-pass resolution step;
-                  -- each entry identifies the BUSINESS_RULE and the specific FUNCTION
-                  -- node whose called_operation_id resolves to this operation;
-                  -- empty for entry-point operations that are not called by any rule
 ```
-
-**`called_by`** — The reverse complement of `FUNCTION.called_operation_id`. When the two-pass resolution step upgrades a FUNCTION node's `called_operation_id` from `"_EXTERNAL_"` to a real `BUSINESS_OPERATION.id`, it simultaneously appends a `{ business_rule_id, function_node_id }` entry to the target operation's `called_by` array. This makes the invocation graph fully bidirectional and navigable in either direction without scanning the entire ABRT.
-
-Validators must enforce consistency: for every FUNCTION node where `called_operation_id` is a non-null, non-`"_EXTERNAL_"` id, the referenced BUSINESS_OPERATION must contain a matching `called_by` entry, and vice versa.
 
 **Operation Types:**
 - `CALCULATION` — Derives a value (e.g., benefit amount, tax, contribution rate)
@@ -70,7 +61,7 @@ BUSINESS_RULE
   rule_type:      [ CONSTRAINT | FORMULA | POLICY | ELIGIBILITY | DERIVATION | ALLOCATION | LOOKUP | ACTION ]
   priority:       integer (for ordered rule sets)
   source_lines:   PL/SQL line range for traceability
-  derived_values: [ (FORMULA | FUNCTION)* ]  -- intermediate values evaluated before main logic (optional)
+  derived_values: [ FORMULA* ]      -- intermediate values evaluated before main logic (optional)
   cursor_scope:   CURSOR_SCOPE     -- iteration boundary for cursor-based rules (optional)
   conditions:     [ CONDITION* ]   -- conditional branches (IF/ELSIF/CASE guards)
   formulas:       [ FORMULA* ]     -- calculations and derivations
@@ -91,23 +82,6 @@ BUSINESS_RULE
 - `ALLOCATION` — Distributes an amount across accounts or members
 - `LOOKUP` — Retrieves a rate or value from a reference table based on criteria
 - `ACTION` — An unconditional imperative side effect: DML, procedure call, error raising, or assignment. Use this rule type when the business rule exists solely to perform an action with no condition guarding it. Actions reached through conditional logic should still use `CONDITION.then_branch` / `else_branch` with ACTION child nodes on the condition, not this rule type.
-
-**Rule Type Field Constraints:**
-
-The `rule_type` value determines which child fields are required and which are prohibited. Validators must enforce these constraints — a field listed as prohibited must be absent or empty; a field listed as required must be present and non-empty.
-
-| `rule_type`   | Required fields                        | Prohibited fields             |
-|---------------|----------------------------------------|-------------------------------|
-| `CONSTRAINT`  | `conditions` (non-empty)               | `policy_branch`               |
-| `FORMULA`     | `formulas` or `derived_values`         | `conditions`, `policy_branch` |
-| `POLICY`      | `policy_branch`                        | `conditions`                  |
-| `ELIGIBILITY` | `conditions` (non-empty)               | `policy_branch`               |
-| `DERIVATION`  | `conditions` or `formulas`             | `policy_branch`               |
-| `ALLOCATION`  | `formulas` or `actions`                | `policy_branch`               |
-| `LOOKUP`      | `lookup_ref`                           | `policy_branch`               |
-| `ACTION`      | `actions` (non-empty)                  | `conditions`, `policy_branch` |
-
-`lookup_ref`, `actions`, `formulas`, and `derived_values` may appear alongside the required fields of any rule type unless explicitly listed as prohibited above.
 
 ---
 
@@ -145,152 +119,30 @@ CURSOR_SCOPE
 
 ### 2.4 CONDITION (Branch Node)
 
-Represents a conditional branch within a business rule. Derived from IF / ELSIF / CASE / DECODE constructs in PL/SQL.
-
-A CONDITION node takes one of two **exclusive forms**. The form is determined by whether the node is a leaf comparison or a compound logical junction. These two forms must not be mixed on a single node.
-
----
-
-#### Form 1 — Leaf Comparison
-
-A leaf comparison evaluates a single predicate: one left operand compared to one right operand via a comparison operator. It holds no children.
+Represents a conditional branch within a business rule. Derived from IF / ELSIF / CASE / DECODE constructs in PL/SQL. Conditions form a tree of their own — AND/OR compositions are explicit child nodes.
 
 ```
-CONDITION (leaf)
-  id:            unique identifier
-  label:         plain English condition description
-  operator:      [ EQ | NEQ | GT | GTE | LT | LTE | IN | NOT_IN | IS_NULL | IS_NOT_NULL | BETWEEN ]
-  logical_op:    NONE          -- a leaf does not combine with siblings; always NONE
-  left_operand:  DATA_INPUT | CONSTANT | FORMULA
-  right_operand: DATA_INPUT | CONSTANT | FORMULA | VALUE_SET
-  conditions:    []            -- always empty; leaf nodes have no children
-  then_branch:   (absent)      -- then/else are placed on the enclosing COMPOUND, not on leaves
-  else_branch:   (absent)
+CONDITION
+  id:           unique identifier
+  label:        plain English condition description
+  operator:     [ EQ | NEQ | GT | GTE | LT | LTE | IN | NOT_IN | IS_NULL | IS_NOT_NULL | BETWEEN ]
+  logical_op:   [ AND | OR | NOT | NONE ]  -- how this combines with siblings
+  left_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE
+  right_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE | VALUE_SET
+  conditions:   [ CONDITION* ]    -- nested AND/OR sub-conditions
+  then_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH
+  else_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH | NULL
 ```
 
-**Constraints:**
-- `operator` must be a comparison operator value from the enum above
-- `logical_op` must be `NONE`
-- `left_operand` and `right_operand` must both be present
-- `conditions` must be empty (`[]`)
-- `then_branch` and `else_branch` must be absent or null
-
----
-
-#### Form 2 — Compound Logical Junction
-
-A compound junction combines two or more child CONDITION nodes via a logical operator. It carries no comparison of its own.
-
-```
-CONDITION (compound)
-  id:            unique identifier
-  label:         plain English description of the combined condition
-  operator:      null          -- a compound has no direct comparison operator
-  logical_op:    [ AND | OR | NOT ]
-  left_operand:  null          -- absent; the comparison lives in the child nodes
-  right_operand: null          -- absent
-  conditions:    [ CONDITION+ ] -- two or more leaf or compound children (one for NOT)
-  then_branch:   ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH
-  else_branch:   ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH | null
-```
-
-**Constraints:**
-- `operator` must be `null`
-- `left_operand` and `right_operand` must be `null`
-- `logical_op` must be `AND`, `OR`, or `NOT`
-- `conditions` must contain at least two children (`NOT` requires exactly one)
-- `then_branch` and `else_branch` are placed on the compound node, not on its leaf children
-
----
-
-**The key rule — `operator` and `logical_op` are mutually exclusive roles:**
-A node that carries a comparison operator (`EQ`, `LT`, etc.) is a leaf and must have `logical_op: NONE`. A node that carries a logical junction (`AND`, `OR`, `NOT`) is a compound and must have `operator: null`. Setting both `operator: "LT"` and `logical_op: "AND"` on the same node is a grammar error.
-
----
-
-#### Examples
-
-**Single leaf condition:**
+**Example mapping:**
 ```sql
-IF v_status != 'PAID' THEN
-  RAISE_APPLICATION_ERROR(-20002, 'Cannot ship unpaid orders.');
-END IF;
+IF v_age >= 65 AND v_status = 'ACTIVE' THEN ...
 ```
 Maps to:
 ```
-CONDITION (leaf)
-  operator:      NEQ
-  logical_op:    NONE
-  left_operand:  DATA_INPUT[ORDER_STATUS]
-  right_operand: CONSTANT('PAID')
-  conditions:    []
-  then_branch:   ACTION(RAISE_ERROR, -20002)
-  else_branch:   null
-```
-
-**Compound AND — two comparisons joined by AND:**
-```sql
-IF :NEW.quantity_on_hand < :NEW.reorder_point
-   AND :OLD.quantity_on_hand >= :OLD.reorder_point THEN
-  INSERT INTO purchase_orders ...;
-END IF;
-```
-Maps to:
-```
-CONDITION (compound, logical_op=AND)          ← then_branch lives here
-  operator:      null
-  left_operand:  null
-  right_operand: null
-  conditions: [
-    CONDITION (leaf)                           ← no then/else on leaves
-      operator: LT,  logical_op: NONE
-      left_operand:  DATA_INPUT[INVENTORY.QUANTITY_ON_HAND (:NEW)]
-      right_operand: DATA_INPUT[INVENTORY.REORDER_POINT (:NEW)]
-    ,
-    CONDITION (leaf)
-      operator: GTE, logical_op: NONE
-      left_operand:  DATA_INPUT[INVENTORY.QUANTITY_ON_HAND (:OLD)]
-      right_operand: DATA_INPUT[INVENTORY.REORDER_POINT (:OLD)]
-  ]
-  then_branch: ACTION(INSERT into PURCHASE_ORDERS)
-  else_branch: null
-```
-
-**Nested compound — AND containing a nested AND:**
-```sql
-IF v_hours_worked > 40
-   AND v_dept != 'EXECUTIVE'
-   AND v_salary_grade < 15 THEN
-  UPDATE payroll ...;
-END IF;
-```
-Maps to:
-```
-CONDITION (compound, logical_op=AND)
-  conditions: [
-    CONDITION (leaf, op=GT)   left=HOURS_WORKED,  right=CONSTANT(40)
-    CONDITION (leaf, op=NEQ)  left=DEPARTMENT,    right=CONSTANT('EXECUTIVE')
-    CONDITION (leaf, op=LT)   left=SALARY_GRADE,  right=CONSTANT(15)
-  ]
-  then_branch: ACTION(UPDATE PAYROLL)
-```
-
-**Compound OR nested inside AND:**
-```sql
-IF v_age < 18 OR (v_status = 'SUSPENDED' AND v_override != 'Y') THEN ...
-```
-Maps to:
-```
-CONDITION (compound, logical_op=OR)
-  conditions: [
-    CONDITION (leaf, op=LT)    left=AGE, right=CONSTANT(18)
-    CONDITION (compound, logical_op=AND)
-      conditions: [
-        CONDITION (leaf, op=EQ)   left=STATUS,   right=CONSTANT('SUSPENDED')
-        CONDITION (leaf, op=NEQ)  left=OVERRIDE, right=CONSTANT('Y')
-      ]
-  ]
-  then_branch: ...
+CONDITION(logical_op=AND)
+  ├── CONDITION(left=AGE, op=GTE, right=CONSTANT(65))
+  └── CONDITION(left=MEMBER_STATUS, op=EQ, right=CONSTANT('ACTIVE'))
 ```
 
 ---
@@ -306,7 +158,7 @@ FORMULA
   expression:   human-readable formula (e.g., "salary × accrual_rate × years_service")
   result_type:  [ MONETARY | PERCENTAGE | INTEGER | DATE | BOOLEAN | CATEGORY ]
   result_unit:  string (e.g., "AUD", "years", "%")
-  operands:     [ DATA_INPUT | CONSTANT | FORMULA | FUNCTION | REF ]   -- inputs to this formula
+  operands:     [ DATA_INPUT | CONSTANT | FORMULA ]   -- inputs to this formula
   operator_seq: ordered list of operators applied
   wrapper_fn:   [ GREATEST | LEAST | NVL | ABS | SIGN ] (optional)
   wrapper_args: [ CONSTANT | DATA_INPUT | FORMULA ]+   (optional — additional args to wrapper)
@@ -326,33 +178,7 @@ ROUNDING_RULE
 
 ---
 
-### 2.6 FUNCTION (Derived Value Node)
-
-Represents a derived value sourced from a call to a user-defined PL/SQL function. Distinct from FORMULA (which models inline arithmetic or SQL expressions), FUNCTION captures a call to a named PL/SQL function that is itself defined as a BUSINESS_OPERATION in the same ABRT.
-
-```
-FUNCTION
-  id:           unique identifier
-  label:        name of the derived value
-  expression:   the call as it appears in source (e.g., "calc_discount_rate(p_customer_tier, p_order_total)")
-  result_type:  [ MONETARY | PERCENTAGE | INTEGER | DATE | BOOLEAN | CATEGORY ]
-  result_unit:  string (optional)
-  operands:     [ DATA_INPUT | CONSTANT | FORMULA | REF ]   -- inputs passed to the function
-  called_operation_id: null | "_EXTERNAL_" | BUSINESS_OPERATION.id
-```
-
-**`called_operation_id` values:**
-- `null` — The function is a built-in SQL or PL/SQL function (e.g., `ROUND`, `TRUNC`, `NVL`). No cross-reference is needed.
-- `"_EXTERNAL_"` — The function is a user-defined PL/SQL function that has not yet been resolved to a BUSINESS_OPERATION. Set this sentinel at parse time during initial extraction; a two-pass resolution step upgrades it to the actual `BUSINESS_OPERATION.id` once all operations in the source are known. The underscore wrapping distinguishes it from the PL/SQL reserved keyword `EXTERNAL`.
-- `"<id>"` — The function is resolved to a specific BUSINESS_OPERATION by its `id`. This cross-reference makes the dependency between the calling operation and the called function machine-navigable.
-
-**Two-pass resolution:** When extracting a PL/SQL procedure that calls another user-defined function, the called function may not yet have been parsed. Set `called_operation_id: "_EXTERNAL_"` initially. After all operations in the source file are extracted, a resolution pass matches each FUNCTION node's `expression` against the `source` field of each `BUSINESS_OPERATION`. A match upgrades `called_operation_id` from `"_EXTERNAL_"` to the matched `BUSINESS_OPERATION.id`.
-
-**FUNCTION vs FORMULA:** Use FUNCTION when the derived value is the return value of a named user-defined PL/SQL function call (e.g., `calc_discount_rate(...)`). Use FORMULA for inline arithmetic, SQL aggregate expressions, or built-in function calls where no BUSINESS_OPERATION cross-reference exists.
-
----
-
-### 2.7 DATA_INPUT (Leaf Node)
+### 2.6 DATA_INPUT (Leaf Node)
 
 Represents a data value consumed by a rule. This is the primary leaf node type — it traces where rule inputs come from.
 
@@ -380,7 +206,7 @@ DATA_INPUT
 
 ---
 
-### 2.8 CONSTANT (Leaf Node)
+### 2.7 CONSTANT (Leaf Node)
 
 Represents a hard-coded value or named constant that acts as a rule parameter. Distinguishing constants from inputs is critical — constants represent embedded policy decisions that may need to change.
 
@@ -404,7 +230,7 @@ CONSTANT
 
 ---
 
-### 2.9 VALUE_SET (Collection Leaf Node)
+### 2.8 VALUE_SET (Collection Leaf Node)
 
 Represents an explicit set of values used as the right operand of an `IN` or `NOT_IN` condition, or as a multi-value `when_value` in a `POLICY_CASE`. In PL/SQL this corresponds to the parenthesised list in `IN (...)` expressions or multi-value CASE branches.
 
@@ -438,7 +264,7 @@ CONDITION
 
 ---
 
-### 2.10 POLICY_BRANCH (Decision Node)
+### 2.9 POLICY_BRANCH (Decision Node)
 
 
 Represents a multi-way policy decision — where the same business operation follows different paths based on fund type, member category, product type, or regulatory regime. Common in superannuation where DB, DC, and hybrid funds co-exist.
@@ -488,7 +314,7 @@ A `BUSINESS_RULE` wrapper is only needed when the branch contains its own condit
 
 ---
 
-### 2.11 ACTION (Outcome Node)
+### 2.10 ACTION (Outcome Node)
 
 Represents an imperative outcome of a condition branch — an operation that the system performs when a condition is met (or not met). While nodes like `BUSINESS_RULE`, `FORMULA`, and `POLICY_BRANCH` describe *further evaluation*, an `ACTION` describes a *side effect*: raising an error, performing DML, calling a procedure, or returning a value.
 
@@ -583,7 +409,7 @@ ACTION(action_type=UPDATE, target="CLAIMS",
 
 ---
 
-### 2.12 LOOKUP_REF (Reference Data Node)
+### 2.11 LOOKUP_REF (Reference Data Node)
 
 Represents a reference to a lookup table, rate table, or static classification table. Superannuation systems are rich in rate tables (contribution rates, tax brackets, fee schedules, age factors).
 
@@ -604,18 +430,12 @@ LOOKUP_REF
 ## 3. ABRT Grammar (Formal Notation)
 
 ```
-ABRT              ::= ( BUSINESS_OPERATION | TRIGGER_OPERATION )+
+ABRT              ::= BUSINESS_OPERATION+
 
-BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+,
-                          called_by:[ { business_rule_id, function_node_id } ]* }
-
-TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
-                         trigger_timing, trigger_event, trigger_level,
-                         when_clause?, enabled,
-                         BUSINESS_RULE+ }
+BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
 
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
-                         derived_values:( FORMULA | FUNCTION )*,
+                         derived_values:FORMULA*,
                          cursor_scope:CURSOR_SCOPE?,
                          conditions:CONDITION*,
                          formulas:FORMULA*,
@@ -628,23 +448,11 @@ CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
                          fields:DATA_INPUT+ }
 
-CONDITION         ::= LEAF_CONDITION | COMPOUND_CONDITION
-
-LEAF_CONDITION    ::= { id, label,
-                         operator:(EQ|NEQ|GT|GTE|LT|LTE|IN|NOT_IN|IS_NULL|IS_NOT_NULL|BETWEEN),
-                         logical_op:NONE,
-                         left_operand:(DATA_INPUT | CONSTANT | FORMULA),
-                         right_operand:(DATA_INPUT | CONSTANT | FORMULA | VALUE_SET),
-                         conditions:[] }
-
-COMPOUND_CONDITION ::= { id, label,
-                          operator:null,
-                          logical_op:(AND | OR | NOT),
-                          left_operand:null,
-                          right_operand:null,
-                          conditions:CONDITION+,
-                          then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
-                          else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
+CONDITION         ::= { id, label, operator, logical_op,
+                         left_operand, right_operand,
+                         conditions:CONDITION*,
+                         then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
+                         else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
 
 ACTION            ::= { id, action_type, target?,
                          error_code?, message?,
@@ -654,17 +462,11 @@ ACTION            ::= { id, action_type, target?,
                          steps:[ ACTION+ ]?,
                          description? }
 
-FORMULA           ::= { id, label, expression, result_type, result_unit?,
-                         operands:( DATA_INPUT | CONSTANT | FORMULA | FUNCTION | REF )+,
-                         operator_seq?,
+FORMULA           ::= { id, label, expression, result_type,
+                         (DATA_INPUT | CONSTANT | FORMULA)+,
                          wrapper_fn:( GREATEST | LEAST | NVL | ABS | SIGN )?,
                          wrapper_args:( CONSTANT | DATA_INPUT | FORMULA )*,
-                         rounding:ROUNDING_RULE?,
-                         children:FORMULA* }
-
-FUNCTION          ::= { id, label, expression, result_type, result_unit?,
-                         operands:( DATA_INPUT | CONSTANT | FORMULA | REF )+,
-                         called_operation_id:( null | "_EXTERNAL_" | BUSINESS_OPERATION.id ) }
+                         ROUNDING_RULE? }
 
 POLICY_BRANCH     ::= { id, label,
                          discriminator_type:( SIMPLE | SEARCHED ),
@@ -673,8 +475,8 @@ POLICY_BRANCH     ::= { id, label,
                          POLICY_CASE+ }
 
 POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
-                         when_value?, label, condition:CONDITION?,
-                         rule_set:(BUSINESS_RULE | ACTION | FORMULA)+ }
+                         when_value?, label, CONDITION?,
+                         (BUSINESS_RULE | ACTION | FORMULA)+ }
 
 LOOKUP_REF        ::= { id, label, table_name,
                          key_columns:DATA_INPUT+,
@@ -1162,9 +964,81 @@ TRIGGER_OPERATION(trigger_event=INSERT, trigger_level=ROW)
 
 ---
 
-### 9.8 ABRT Grammar
+### 9.8 Updated ABRT Grammar
 
-The complete formal grammar, including `TRIGGER_OPERATION`, is defined in **Section 3**. Section 3 is the single authoritative source for all grammar rules.
+```
+ABRT              ::= ( BUSINESS_OPERATION | TRIGGER_OPERATION )+
+
+BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
+
+TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
+                         trigger_timing, trigger_event, trigger_level,
+                         when_clause?, enabled,
+                         BUSINESS_RULE+ }
+
+BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
+                         derived_values:FORMULA*,
+                         cursor_scope:CURSOR_SCOPE?,
+                         conditions:CONDITION*,
+                         formulas:FORMULA*,
+                         policy_branch:POLICY_BRANCH?,
+                         lookup_ref:LOOKUP_REF?,
+                         actions:ACTION*,
+                         data_inputs:DATA_INPUT* }
+
+CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
+                         filter:CONDITION,
+                         fields:DATA_INPUT+ }
+
+CONDITION         ::= { id, label, operator, logical_op,
+                         left_operand, right_operand,
+                         conditions:CONDITION*,
+                         then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
+                         else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
+
+ACTION            ::= { id, action_type, target?,
+                         error_code?, message?,
+                         value:(CONSTANT | DATA_INPUT | FORMULA)?,
+                         arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
+                         columns:[ { column_name, value:(DATA_INPUT | CONSTANT | FORMULA) } ]?,
+                         steps:[ ACTION+ ]?,
+                         description? }
+
+FORMULA           ::= { id, label, expression, result_type,
+                         (DATA_INPUT | CONSTANT | FORMULA)+,
+                         wrapper_fn:( GREATEST | LEAST | NVL | ABS | SIGN )?,
+                         wrapper_args:( CONSTANT | DATA_INPUT | FORMULA )*,
+                         ROUNDING_RULE? }
+
+POLICY_BRANCH     ::= { id, label,
+                         discriminator_type:( SIMPLE | SEARCHED ),
+                         discriminator:(DATA_INPUT | FORMULA)?,
+                         bracket_type:( MARGINAL | FLAT | TIERED )?,
+                         POLICY_CASE+ }
+
+POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
+                         when_value?, label, CONDITION?,
+                         (BUSINESS_RULE | ACTION | FORMULA)+ }
+
+LOOKUP_REF        ::= { id, label, table_name,
+                         key_columns:DATA_INPUT+,
+                         result_column, lookup_type,
+                         effective_date_col?,
+                         fallback:CONSTANT? }
+
+DATA_INPUT        ::= { id, label, source_type, source_ref,
+                         data_type, is_key, nullable, default_value? }
+
+CONSTANT          ::= { id, label, value, value_type,
+                         const_type, description, review_flag }
+
+VALUE_SET         ::= { id, label, values:CONSTANT+, value_type,
+                         description?, review_flag }
+
+REF               ::= { type, ref:id }
+                       -- Cross-reference to an existing node by its id.
+                       -- See Section 3 grammar for full description.
+```
 
 ### 9.9 Updated Node Relationship Summary
 
@@ -1222,7 +1096,7 @@ ABRT
 
 ---
 
-*ABRT Specification v1.11 — Superannuation Legacy System Documentation Project*
+*ABRT Specification v1.7 — Superannuation Legacy System Documentation Project*
 *v1.1 adds TRIGGER_OPERATION root node for Oracle database triggers*
 *v1.2 adds optional CONDITION node to POLICY_CASE for IF/ELSIF guard expressions*
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
@@ -1230,7 +1104,3 @@ ABRT
 *v1.5 allows ACTION directly in POLICY_CASE rule_set — eliminates unnecessary BUSINESS_RULE wrappers for simple imperative outcomes*
 *v1.6 adds ACTION to BUSINESS_RULE rule_type enum and typed child arrays; replaces abstract `children` grouping with explicit typed attributes (conditions, formulas, policy_branch, lookup_ref, actions, data_inputs) matching JSON serialization; adds FORMULA to POLICY_CASE rule_set for direct calculation outcomes*
 *v1.7 adds COMPOSITE action_type with `steps` array for multi-action branch outcomes; extends `columns` attribute to multi-column UPDATE actions; adds cross-rule REF guidance; adds extraction Step 0 for separating business logic from infrastructure code*
-*v1.8 makes CONDITION node forms explicit: LEAF_CONDITION (operator set, logical_op=NONE, no children, no then/else_branch) and COMPOUND_CONDITION (operator=null, logical_op=AND/OR/NOT, children in conditions array) are mutually exclusive — setting both operator and logical_op on the same node is a grammar error; adds Rule Type Field Constraints table specifying required and prohibited child fields per rule_type, making rule_type a mechanically validatable structural constraint rather than a semantic label only*
-*v1.9 adds FUNCTION node (§2.6) for derived values sourced from user-defined PL/SQL function calls, distinct from FORMULA (inline expressions); FUNCTION carries operation_id (null for built-ins, "_EXTERNAL_" sentinel for unresolved user-defined functions, or resolved BUSINESS_OPERATION.id after two-pass resolution); derived_values updated to [(FORMULA | FUNCTION)*]; FUNCTION added as valid operand type in FORMULA; §3 FORMULA BNF corrected to add result_unit, named operands attribute, operator_seq, FUNCTION and REF as operand types, rounding attribute name, and children array — resolving gaps between §2.5 prose and §3 grammar; FUNCTION BNF added to §3*
-*v1.10 adds called_by array to BUSINESS_OPERATION — reverse index of all FUNCTION nodes whose called_operation_id resolves to this operation; each entry is { business_rule_id, function_node_id } making the invocation graph fully bidirectional; populated during the two-pass resolution step alongside called_operation_id resolution; validators enforce consistency between FUNCTION.called_operation_id and the corresponding called_by entry*
-*v1.11 renames FUNCTION.operation_id to FUNCTION.called_operation_id — disambiguates direction: the field identifies the operation being called (callee), not the operation doing the calling (caller); pairs symmetrically with BUSINESS_OPERATION.called_by*
