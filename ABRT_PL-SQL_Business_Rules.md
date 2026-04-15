@@ -492,13 +492,14 @@ A `BUSINESS_RULE` wrapper is only needed when the branch contains its own condit
 
 Represents an imperative outcome of a condition branch — an operation that the system performs when a condition is met (or not met). While nodes like `BUSINESS_RULE`, `FORMULA`, and `POLICY_BRANCH` describe *further evaluation*, an `ACTION` describes a *side effect*: raising an error, performing DML, calling a procedure, or returning a value.
 
-In PL/SQL, actions correspond to `RAISE_APPLICATION_ERROR`, `INSERT`, `UPDATE`, `DELETE` statements, procedure `CALL`s, `RETURN` statements, and variable assignments that appear inside IF/ELSIF/ELSE or CASE branches.
+In PL/SQL, actions correspond to `RAISE_APPLICATION_ERROR`, `INSERT`, `UPDATE`, `DELETE` statements, procedure `CALL`s, `RETURN` statements, variable assignments, and loop control statements that appear inside IF/ELSIF/ELSE or CASE branches.
 
 ```
 ACTION
   id:           unique identifier
-  action_type:  [ RAISE_ERROR | UPDATE | INSERT | DELETE | CALL | RETURN | ASSIGN | COMPOSITE ]
-  target:       string  -- table.column (DML), procedure name (CALL), or variable (ASSIGN)
+  action_type:  [ RAISE_ERROR | UPDATE | INSERT | DELETE | CALL | RETURN | ASSIGN | COMPOSITE | EXIT_LOOP ]
+  target:       string  -- table.column (DML), procedure name (CALL), variable (ASSIGN),
+                           or loop label (EXIT_LOOP — omit for innermost loop)
   error_code:   integer (RAISE_ERROR only)
   message:      string  (RAISE_ERROR only — the error message text)
   value:        CONSTANT | DATA_INPUT | FORMULA (optional — for single-column UPDATE, ASSIGN, RETURN)
@@ -514,9 +515,10 @@ ACTION
 - `INSERT` — DML insert into a table (e.g., `INSERT INTO audit_log ...`)
 - `DELETE` — DML delete from a table (e.g., `DELETE FROM system_logs ...`)
 - `CALL` — Invoke another procedure or function (e.g., `update_status(p_cust_id, 'AUTO_APPROVE')`)
-- `RETURN` — Return a value from a function
+- `RETURN` — Return a value from a function or procedure (exits the subprogram)
 - `ASSIGN` — Set a local variable to a value (intermediate assignment within a rule)
 - `COMPOSITE` — An ordered sequence of sub-actions that execute together as a single business outcome. Use this when a condition branch leads to multiple DML statements or calls that collectively implement one business decision. The `steps` array contains the individual ACTION nodes in execution order. Each step has its own `id` (conventionally the parent's id with a letter suffix, e.g., `ACT_XXX_001A`, `ACT_XXX_001B`).
+- `EXIT_LOOP` — Exits a cursor or `LOOP` construct. Maps to PL/SQL `EXIT` (unconditional) or `EXIT WHEN <condition>` (conditional — the condition is modelled on the enclosing `CONDITION` node, not here). Use `target` to name the loop label when exiting an outer loop from a nested context; omit `target` when exiting the immediately enclosing loop. Does **not** exit the enclosing procedure — use `RETURN` for that.
 
 **Guidance — CALL vs FORMULA:** When a PL/SQL branch body is a procedure call (e.g., `send_notification(member_id, email, 'URGENT_RENEWAL')`), model it as `ACTION(action_type=CALL)`, not as a FORMULA. FORMULAs are pure calculations that return a value with no side effects; ACTIONs are side-effecting operations. A procedure call that sends a notification, writes to a queue, or updates external state is always an ACTION, even if it happens to return a value.
 
@@ -579,6 +581,47 @@ ACTION(action_type=UPDATE, target="CLAIMS",
        columns=[{column_name="STATUS", value=CONSTANT('DENIED')},
                 {column_name="DENIAL_REASON", value=CONSTANT('Claim within deductible')},
                 {column_name="UPDATED_DATE", value=DATA_INPUT[SYSDATE]}])
+```
+
+```sql
+-- EXIT_LOOP (unconditional)
+EXIT;
+```
+Maps to:
+```
+ACTION(action_type=EXIT_LOOP)
+```
+
+```sql
+-- EXIT_LOOP (conditional — EXIT WHEN)
+IF v_term_date < vDueRec.Start_Date THEN
+  EXIT;
+END IF;
+-- or equivalently:
+EXIT WHEN v_term_date < vDueRec.Start_Date;
+```
+Maps to:
+```
+CONDITION (leaf)
+  operator:     LT
+  left_operand: DATA_INPUT[V_TERM_DATE]
+  right_operand: DATA_INPUT[DUES.START_DATE]
+  then_branch:  ACTION(action_type=EXIT_LOOP,
+                       description="Abnormal loop exit — terminal date precedes record start date")
+```
+
+```sql
+-- EXIT_LOOP targeting an outer loop by label
+<<outer_loop>>
+FOR r IN c_members LOOP
+  FOR s IN c_services LOOP
+    EXIT outer_loop WHEN s.invalid = 'Y';
+  END LOOP;
+END LOOP;
+```
+Maps to:
+```
+ACTION(action_type=EXIT_LOOP, target="outer_loop")
 ```
 
 ---
@@ -646,7 +689,9 @@ COMPOUND_CONDITION ::= { id, label,
                           then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
                           else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
 
-ACTION            ::= { id, action_type, target?,
+ACTION            ::= { id, action_type:(RAISE_ERROR | UPDATE | INSERT | DELETE |
+                                        CALL | RETURN | ASSIGN | COMPOSITE | EXIT_LOOP),
+                         target?,
                          error_code?, message?,
                          value:(CONSTANT | DATA_INPUT | FORMULA)?,
                          arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
@@ -1222,7 +1267,7 @@ ABRT
 
 ---
 
-*ABRT Specification v1.11 — Superannuation Legacy System Documentation Project*
+*ABRT Specification v1.12 — Superannuation Legacy System Documentation Project*
 *v1.1 adds TRIGGER_OPERATION root node for Oracle database triggers*
 *v1.2 adds optional CONDITION node to POLICY_CASE for IF/ELSIF guard expressions*
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
@@ -1234,3 +1279,4 @@ ABRT
 *v1.9 adds FUNCTION node (§2.6) for derived values sourced from user-defined PL/SQL function calls, distinct from FORMULA (inline expressions); FUNCTION carries operation_id (null for built-ins, "_EXTERNAL_" sentinel for unresolved user-defined functions, or resolved BUSINESS_OPERATION.id after two-pass resolution); derived_values updated to [(FORMULA | FUNCTION)*]; FUNCTION added as valid operand type in FORMULA; §3 FORMULA BNF corrected to add result_unit, named operands attribute, operator_seq, FUNCTION and REF as operand types, rounding attribute name, and children array — resolving gaps between §2.5 prose and §3 grammar; FUNCTION BNF added to §3*
 *v1.10 adds called_by array to BUSINESS_OPERATION — reverse index of all FUNCTION nodes whose called_operation_id resolves to this operation; each entry is { business_rule_id, function_node_id } making the invocation graph fully bidirectional; populated during the two-pass resolution step alongside called_operation_id resolution; validators enforce consistency between FUNCTION.called_operation_id and the corresponding called_by entry*
 *v1.11 renames FUNCTION.operation_id to FUNCTION.called_operation_id — disambiguates direction: the field identifies the operation being called (callee), not the operation doing the calling (caller); pairs symmetrically with BUSINESS_OPERATION.called_by*
+*v1.12 adds EXIT_LOOP to ACTION.action_type enum — maps to PL/SQL EXIT and EXIT WHEN constructs; use target to name an outer loop label, omit for innermost loop; EXIT WHEN is modelled as a CONDITION with EXIT_LOOP in then_branch; distinguishes loop exit from procedure exit (RETURN)*

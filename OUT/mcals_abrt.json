@@ -1,0 +1,566 @@
+{
+  "abrt_version": "1.12",
+  "application": "COMSAS",
+  "source_file": "mcals.sql",
+  "notes": [
+    "File contains two standalone procedures with no package declaration: Diag and Accumulate_One_Member.",
+    "Diag (lines 1-5) is pure debug output via DBMS_OUTPUT; excluded as infrastructure.",
+    "Accumulate_One_Member is a partially developed version of the full procedure. The crDues cursor loop is present (lines 144-175) with the M (Membership) row branch active. The E (Employment) and I (Irregular Service) row branches are not yet present.",
+    "The vStDteFound flag initialisation on lines 105-108 is infrastructure setup with no active consumer in this version; excluded.",
+    "The crBirthDate OPEN/FETCH/CLOSE on lines 114-116 retrieves vBirthDate, which is not referenced in the active M-row logic; excluded as setup for future E/I branch logic.",
+    "Source defect: the Get_old_Dues call on line 132 is missing a trailing semicolon.",
+    "The value '1' used as a sentinel for Calcs_Load.gCSSDuesID on line 131 does not appear to be a real Dues ID but an embedded signal value. Flagged for review.",
+    "The loop exit on line 168 (EXIT WHEN vTermDate < vDueRec.Start_Date) is annotated in source as 'we've had a hiccup - exit abnormally' — an unexpected condition where the computed terminal date precedes the membership start date. Modelled as EXIT_LOOP (ACT-AOM-011B); does not exit the procedure."
+  ],
+  "trigger_operations": [],
+  "business_operations": [
+    {
+      "id": "BO-AOM-001",
+      "label": "Accumulate One Member Service Days",
+      "source": "ACCUMULATE_ONE_MEMBER",
+      "operation_type": "CALCULATION",
+      "called_by": [],
+      "business_rules": [
+        {
+          "id": "BR-AOM-001",
+          "label": "CSS Scheme Eligibility",
+          "description": "Only members belonging to the CSS (Commonwealth Superannuation Scheme) are processed. If the membership's scheme short name is not 'CSS', the procedure returns immediately without accumulating days.",
+          "rule_type": "CONSTRAINT",
+          "priority": 1,
+          "source_lines": "120-126",
+          "derived_values": [],
+          "conditions": [
+            {
+              "id": "COND-AOM-001",
+              "label": "Membership scheme is not CSS",
+              "operator": "NEQ",
+              "logical_op": "NONE",
+              "left_operand": {
+                "id": "DI-AOM-001",
+                "label": "Scheme Short Name",
+                "source_type": "CURSOR_FIELD",
+                "source_ref": "SCHEMES.SHORT_NAME",
+                "data_type": "VARCHAR",
+                "is_key": true,
+                "nullable": false
+              },
+              "right_operand": {
+                "id": "C-AOM-001",
+                "label": "CSS Scheme Code",
+                "value": "CSS",
+                "value_type": "STRING",
+                "const_type": "LITERAL",
+                "description": "Hard-coded scheme identifier for the Commonwealth Superannuation Scheme",
+                "review_flag": true
+              },
+              "conditions": [],
+              "then_branch": {
+                "id": "ACT-AOM-001",
+                "action_type": "RETURN",
+                "description": "Return without accumulating days — membership is not CSS"
+              },
+              "else_branch": null
+            }
+          ],
+          "formulas": [],
+          "policy_branch": null,
+          "lookup_ref": null,
+          "actions": [],
+          "data_inputs": [
+            {
+              "id": "DI-AOM-002",
+              "label": "Membership ID",
+              "source_type": "ARGUMENT",
+              "source_ref": ":pMembershipID",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            }
+          ]
+        },
+        {
+          "id": "BR-AOM-002",
+          "label": "Dues Retrieval Strategy",
+          "description": "Three-way ELSIF dispatch on the cached dues ID (Calcs_Load.gCSSDuesID): (1) null — call Get_Dues for a fresh dues strip; (2) sentinel value 1 — call Get_old_Dues for a legacy dues strip; (3) any other non-null value — use cached dues ID directly and set status to 'Y'.",
+          "rule_type": "POLICY",
+          "priority": 2,
+          "source_lines": "129-136",
+          "derived_values": [],
+          "conditions": [],
+          "formulas": [],
+          "policy_branch": {
+            "id": "PB-AOM-001",
+            "label": "Dues ID Cache and Routing Decision",
+            "discriminator_type": "SEARCHED",
+            "discriminator": null,
+            "branches": [
+              {
+                "when_type": "CONDITION",
+                "label": "No cached dues ID — fetch fresh from SAS_Membership_Dues",
+                "condition": {
+                  "id": "COND-AOM-002",
+                  "label": "gCSSDuesID is null",
+                  "operator": "IS_NULL",
+                  "logical_op": "NONE",
+                  "left_operand": {
+                    "id": "DI-AOM-003",
+                    "label": "Cached CSS Dues ID",
+                    "source_type": "PACKAGE_VARIABLE",
+                    "source_ref": "Calcs_Load.gCSSDuesID",
+                    "data_type": "NUMBER",
+                    "is_key": false,
+                    "nullable": true
+                  },
+                  "right_operand": null,
+                  "conditions": []
+                },
+                "rule_set": [
+                  {
+                    "id": "ACT-AOM-002",
+                    "action_type": "CALL",
+                    "target": "SAS_MEMBERSHIP_DUES.GET_DUES",
+                    "description": "Retrieve current CSS dues strip ID and status for the membership",
+                    "arguments": [
+                      { "name": "pMembershipID", "value": { "type": "REF", "ref": "DI-AOM-002" } }
+                    ]
+                  }
+                ]
+              },
+              {
+                "when_type": "CONDITION",
+                "label": "Sentinel value 1 — fetch legacy dues via Get_old_Dues",
+                "condition": {
+                  "id": "COND-AOM-003",
+                  "label": "gCSSDuesID equals legacy sentinel value 1",
+                  "operator": "EQ",
+                  "logical_op": "NONE",
+                  "left_operand": { "type": "REF", "ref": "DI-AOM-003" },
+                  "right_operand": {
+                    "id": "C-AOM-002",
+                    "label": "Legacy Dues Sentinel Value",
+                    "value": 1,
+                    "value_type": "NUMERIC",
+                    "const_type": "LITERAL",
+                    "description": "Sentinel value 1 in Calcs_Load.gCSSDuesID signals the legacy Get_old_Dues path; not a real Dues ID",
+                    "review_flag": true
+                  },
+                  "conditions": []
+                },
+                "rule_set": [
+                  {
+                    "id": "ACT-AOM-003",
+                    "action_type": "CALL",
+                    "target": "SAS_MEMBERSHIP_DUES.GET_OLD_DUES",
+                    "description": "Retrieve legacy CSS dues strip ID and status (note: trailing semicolon missing on line 132 — source defect)",
+                    "arguments": [
+                      { "name": "pMembershipID", "value": { "type": "REF", "ref": "DI-AOM-002" } }
+                    ]
+                  }
+                ]
+              },
+              {
+                "when_type": "DEFAULT",
+                "label": "Cached dues ID available — use directly",
+                "rule_set": [
+                  {
+                    "id": "ACT-AOM-004",
+                    "action_type": "ASSIGN",
+                    "target": "vDuesID",
+                    "description": "Set vDuesID from the cached Calcs_Load.gCSSDuesID value",
+                    "value": { "type": "REF", "ref": "DI-AOM-003" }
+                  },
+                  {
+                    "id": "ACT-AOM-005",
+                    "action_type": "ASSIGN",
+                    "target": "vStatus",
+                    "description": "Set vStatus to 'Y' — cache path always indicates dues are available",
+                    "value": {
+                      "id": "C-AOM-003",
+                      "label": "Success Status Code",
+                      "value": "Y",
+                      "value_type": "STRING",
+                      "const_type": "SYSTEM",
+                      "description": "Status code indicating dues history is available",
+                      "review_flag": false
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "lookup_ref": null,
+          "actions": [],
+          "data_inputs": []
+        },
+        {
+          "id": "BR-AOM-003",
+          "label": "Dues History Existence Check",
+          "description": "After the dues retrieval (any path), if vStatus is 'N' the membership has no dues history and processing is aborted.",
+          "rule_type": "ELIGIBILITY",
+          "priority": 3,
+          "source_lines": "139-142",
+          "derived_values": [],
+          "conditions": [
+            {
+              "id": "COND-AOM-004",
+              "label": "Dues retrieval returned no result",
+              "operator": "EQ",
+              "logical_op": "NONE",
+              "left_operand": {
+                "id": "DI-AOM-004",
+                "label": "Dues Retrieval Status",
+                "source_type": "PACKAGE_VARIABLE",
+                "source_ref": "vStatus",
+                "data_type": "VARCHAR",
+                "is_key": true,
+                "nullable": false
+              },
+              "right_operand": {
+                "id": "C-AOM-004",
+                "label": "Failure Status Code",
+                "value": "N",
+                "value_type": "STRING",
+                "const_type": "SYSTEM",
+                "description": "Status code indicating dues history was not found",
+                "review_flag": false
+              },
+              "conditions": [],
+              "then_branch": {
+                "id": "ACT-AOM-006",
+                "action_type": "RETURN",
+                "description": "Return pStatus='N' — no dues history available for this membership"
+              },
+              "else_branch": null
+            }
+          ],
+          "formulas": [],
+          "policy_branch": null,
+          "lookup_ref": null,
+          "actions": [],
+          "data_inputs": []
+        },
+        {
+          "id": "BR-AOM-004",
+          "label": "Dues Record Source Entity Processing",
+          "description": "Iterates the dues history rows (M/E/I) for the member using the crDues cursor. Only the M (Membership) row branch is active in this version; E and I branches are not yet present. The M branch establishes the service period boundaries: join date, previous record initialisation, and terminal date.",
+          "rule_type": "POLICY",
+          "priority": 4,
+          "source_lines": "144-175",
+          "derived_values": [],
+          "cursor_scope": {
+            "id": "CS-AOM-001",
+            "label": "CSS Dues History",
+            "cursor_name": "crDues",
+            "source_table": "DUES",
+            "filter": {
+              "id": "COND-CS-AOM-001",
+              "label": "Dues records for the given dues ID from M/E/I source entities ordered by Init_Contrib_Date and Start_Date",
+              "operator": null,
+              "logical_op": "AND",
+              "left_operand": null,
+              "right_operand": null,
+              "conditions": [
+                {
+                  "id": "COND-CS-AOM-001A",
+                  "label": "Dues ID matches the retrieved dues strip",
+                  "operator": "EQ",
+                  "logical_op": "NONE",
+                  "left_operand": {
+                    "id": "DI-AOM-005",
+                    "label": "Dues Strip ID",
+                    "source_type": "TABLE_COLUMN",
+                    "source_ref": "DUES.ID",
+                    "data_type": "NUMBER",
+                    "is_key": true,
+                    "nullable": false
+                  },
+                  "right_operand": {
+                    "id": "DI-AOM-006",
+                    "label": "Retrieved Dues ID",
+                    "source_type": "PACKAGE_VARIABLE",
+                    "source_ref": "vDuesID",
+                    "data_type": "NUMBER",
+                    "is_key": true,
+                    "nullable": false
+                  },
+                  "conditions": []
+                },
+                {
+                  "id": "COND-CS-AOM-001B",
+                  "label": "Source entity is Membership, Employment, or Irregular Service",
+                  "operator": "IN",
+                  "logical_op": "NONE",
+                  "left_operand": {
+                    "id": "DI-AOM-007",
+                    "label": "Dues Source Entity",
+                    "source_type": "CURSOR_FIELD",
+                    "source_ref": "DUES.SOURCE_ENTITY",
+                    "data_type": "VARCHAR",
+                    "is_key": true,
+                    "nullable": false
+                  },
+                  "right_operand": {
+                    "id": "VS-AOM-001",
+                    "label": "Valid Dues Source Entities",
+                    "values": [
+                      { "id": "C-AOM-005", "label": "Membership Row",        "value": "M", "value_type": "STRING", "const_type": "SYSTEM", "description": "Membership record",                       "review_flag": false },
+                      { "id": "C-AOM-006", "label": "Employment Row",        "value": "E", "value_type": "STRING", "const_type": "SYSTEM", "description": "Employment record",                       "review_flag": false },
+                      { "id": "C-AOM-007", "label": "Irregular Service Row", "value": "I", "value_type": "STRING", "const_type": "SYSTEM", "description": "Irregular (NTCAS) service record",        "review_flag": false }
+                    ],
+                    "value_type": "STRING",
+                    "review_flag": false
+                  },
+                  "conditions": []
+                }
+              ]
+            },
+            "fields": [
+              { "type": "REF", "ref": "DI-AOM-007" },
+              {
+                "id": "DI-AOM-008",
+                "label": "Initial Contribution Date",
+                "source_type": "CURSOR_FIELD",
+                "source_ref": "DUES.INIT_CONTRIB_DATE",
+                "data_type": "DATE",
+                "is_key": false,
+                "nullable": true
+              },
+              {
+                "id": "DI-AOM-009",
+                "label": "Dues Record Start Date",
+                "source_type": "CURSOR_FIELD",
+                "source_ref": "DUES.START_DATE",
+                "data_type": "DATE",
+                "is_key": false,
+                "nullable": false
+              },
+              {
+                "id": "DI-AOM-010",
+                "label": "Dues Record Cease Date",
+                "source_type": "CURSOR_FIELD",
+                "source_ref": "DUES.CEASE_DATE",
+                "data_type": "DATE",
+                "is_key": false,
+                "nullable": true
+              }
+            ]
+          },
+          "conditions": [],
+          "formulas": [],
+          "policy_branch": {
+            "id": "PB-AOM-002",
+            "label": "Dues Record Source Entity Dispatch",
+            "discriminator_type": "SIMPLE",
+            "discriminator": { "type": "REF", "ref": "DI-AOM-007" },
+            "branches": [
+              {
+                "when_type": "CONSTANT",
+                "when_value": { "type": "REF", "ref": "C-AOM-005" },
+                "label": "Membership (M) row — initialise service period boundaries",
+                "rule_set": [
+                  {
+                    "id": "BR-AOM-004A",
+                    "label": "M-Row Boundary Initialisation",
+                    "description": "Sets the join date from Init_Contrib_Date, copies the current row to vPrevRec with Full_Time_Hours and Part_Time_Hours both reset to 1.00 (membership rows carry no actual employment hours), and sets the default terminal date to SysDate.",
+                    "rule_type": "ACTION",
+                    "priority": 1,
+                    "source_lines": "155-159",
+                    "derived_values": [],
+                    "conditions": [],
+                    "formulas": [],
+                    "policy_branch": null,
+                    "lookup_ref": null,
+                    "actions": [
+                      {
+                        "id": "ACT-AOM-007",
+                        "action_type": "ASSIGN",
+                        "target": "vJoinDate",
+                        "description": "Set membership join date from Init_Contrib_Date",
+                        "value": { "type": "REF", "ref": "DI-AOM-008" }
+                      },
+                      {
+                        "id": "ACT-AOM-008",
+                        "action_type": "COMPOSITE",
+                        "description": "Initialise vPrevRec to the current dues row then reset Full_Time_Hours and Part_Time_Hours to 1.00",
+                        "steps": [
+                          {
+                            "id": "ACT-AOM-008A",
+                            "action_type": "ASSIGN",
+                            "target": "vPrevRec",
+                            "description": "Copy current dues row (vDueRec) to vPrevRec"
+                          },
+                          {
+                            "id": "ACT-AOM-008B",
+                            "action_type": "ASSIGN",
+                            "target": "vPrevRec.Full_Time_Hours",
+                            "description": "Reset full-time hours to 1.00 — membership rows carry no employment hours",
+                            "value": {
+                              "id": "C-AOM-008",
+                              "label": "Default Hours Ratio",
+                              "value": 1.0,
+                              "value_type": "NUMERIC",
+                              "const_type": "LITERAL",
+                              "description": "Full-time and part-time hours both set to 1.00 for membership rows to yield a 1:1 pro-rate ratio",
+                              "review_flag": true
+                            }
+                          },
+                          {
+                            "id": "ACT-AOM-008C",
+                            "action_type": "ASSIGN",
+                            "target": "vPrevRec.Part_Time_Hours",
+                            "description": "Reset part-time hours to 1.00 — membership rows carry no employment hours",
+                            "value": { "type": "REF", "ref": "C-AOM-008" }
+                          }
+                        ]
+                      },
+                      {
+                        "id": "ACT-AOM-009",
+                        "action_type": "ASSIGN",
+                        "target": "vTermDate",
+                        "description": "Set default terminal date to the current date (SysDate) — overridden by Cease_Date and/or pEndDate checks that follow",
+                        "value": {
+                          "id": "DI-AOM-011",
+                          "label": "Current System Date",
+                          "source_type": "SYSDATE",
+                          "source_ref": "SYSDATE",
+                          "data_type": "DATE",
+                          "is_key": false,
+                          "nullable": false
+                        }
+                      }
+                    ],
+                    "data_inputs": []
+                  },
+                  {
+                    "id": "BR-AOM-004B",
+                    "label": "Cease Date Terminal Date Override",
+                    "description": "If the membership row has a Cease_Date, use it as the terminal date instead of the SysDate default. This represents the recorded end of the member's contributory service.",
+                    "rule_type": "ELIGIBILITY",
+                    "priority": 2,
+                    "source_lines": "160-162",
+                    "derived_values": [],
+                    "conditions": [
+                      {
+                        "id": "COND-AOM-005",
+                        "label": "Cease date is present",
+                        "operator": "IS_NOT_NULL",
+                        "logical_op": "NONE",
+                        "left_operand": { "type": "REF", "ref": "DI-AOM-010" },
+                        "right_operand": null,
+                        "conditions": [],
+                        "then_branch": {
+                          "id": "ACT-AOM-010",
+                          "action_type": "ASSIGN",
+                          "target": "vTermDate",
+                          "description": "Override terminal date with the membership Cease_Date",
+                          "value": { "type": "REF", "ref": "DI-AOM-010" }
+                        },
+                        "else_branch": null
+                      }
+                    ],
+                    "formulas": [],
+                    "policy_branch": null,
+                    "lookup_ref": null,
+                    "actions": [],
+                    "data_inputs": []
+                  },
+                  {
+                    "id": "BR-AOM-004C",
+                    "label": "End Date First-Call Terminal Date Override",
+                    "description": "On the first call and when an explicit pEndDate is supplied, pEndDate overrides the terminal date (taking precedence over any Cease_Date assigned above). If the resulting terminal date precedes the current record's start date, the crDues loop is exited immediately — the source comment flags this as 'a hiccup — exit abnormally'.",
+                    "rule_type": "ELIGIBILITY",
+                    "priority": 3,
+                    "source_lines": "164-169",
+                    "derived_values": [],
+                    "conditions": [
+                      {
+                        "id": "COND-AOM-006",
+                        "label": "pEndDate supplied and this is the first call",
+                        "operator": null,
+                        "logical_op": "AND",
+                        "left_operand": null,
+                        "right_operand": null,
+                        "conditions": [
+                          {
+                            "id": "COND-AOM-006A",
+                            "label": "pEndDate is not null",
+                            "operator": "IS_NOT_NULL",
+                            "logical_op": "NONE",
+                            "left_operand": {
+                              "id": "DI-AOM-012",
+                              "label": "End Date Parameter",
+                              "source_type": "ARGUMENT",
+                              "source_ref": ":pEndDate",
+                              "data_type": "DATE",
+                              "is_key": false,
+                              "nullable": true
+                            },
+                            "right_operand": null,
+                            "conditions": []
+                          },
+                          {
+                            "id": "COND-AOM-006B",
+                            "label": "pFirstCall is true",
+                            "operator": "EQ",
+                            "logical_op": "NONE",
+                            "left_operand": {
+                              "id": "DI-AOM-013",
+                              "label": "First Call Flag",
+                              "source_type": "ARGUMENT",
+                              "source_ref": ":pFirstCall",
+                              "data_type": "BOOLEAN",
+                              "is_key": false,
+                              "nullable": false
+                            },
+                            "right_operand": {
+                              "id": "C-AOM-009",
+                              "label": "True",
+                              "value": true,
+                              "value_type": "BOOLEAN",
+                              "const_type": "SYSTEM",
+                              "description": "Boolean true",
+                              "review_flag": false
+                            },
+                            "conditions": []
+                          }
+                        ],
+                        "then_branch": {
+                          "id": "ACT-AOM-011",
+                          "action_type": "COMPOSITE",
+                          "description": "Set vTermDate to pEndDate; then exit the crDues loop if vTermDate precedes the record's start date (abnormal exit — source comment: 'we've had a hiccup')",
+                          "steps": [
+                            {
+                              "id": "ACT-AOM-011A",
+                              "action_type": "ASSIGN",
+                              "target": "vTermDate",
+                              "description": "Override terminal date with pEndDate",
+                              "value": { "type": "REF", "ref": "DI-AOM-012" }
+                            },
+                            {
+                              "id": "ACT-AOM-011B",
+                              "action_type": "EXIT_LOOP",
+                              "description": "Exit the crDues cursor loop when the terminal date precedes the current record start date — source comment: 'we've had a hiccup - exit abnormally'. Does not exit the procedure; execution continues at CLOSE crDues."
+                            }
+                          ]
+                        },
+                        "else_branch": null
+                      }
+                    ],
+                    "formulas": [],
+                    "policy_branch": null,
+                    "lookup_ref": null,
+                    "actions": [],
+                    "data_inputs": []
+                  }
+                ]
+              }
+            ]
+          },
+          "lookup_ref": null,
+          "actions": [],
+          "data_inputs": []
+        }
+      ]
+    }
+  ]
+}

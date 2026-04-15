@@ -1,0 +1,414 @@
+{
+  "abrt_version": "1.8",
+  "application": "PL/SQL Business Rule Test Cases",
+  "source_file": "IN/br-4.sql",
+  "trigger_operations": [],
+  "business_operations": [
+    {
+      "id": "SUBMIT_WIRE_TRANSFER",
+      "label": "Submit Wire Transfer",
+      "source": "SUBMIT_WIRE_TRANSFER",
+      "operation_type": "PROCESS",
+      "business_rules": [
+        {
+          "id": "BR-WIRE-001",
+          "label": "Require Active Account For Wire Transfer",
+          "description": "Wire transfers are allowed only for active accounts.",
+          "rule_type": "CONSTRAINT",
+          "priority": 1,
+          "derived_values": [],
+          "conditions": [
+            {
+              "id": "COND-WIRE-001",
+              "label": "Account Status Is Not Active",
+              "operator": "NEQ",
+              "logical_op": "NONE",
+              "left_operand": {
+                "type": "DATA_INPUT",
+                "ref": "DI-WIRE-STATUS"
+              },
+              "right_operand": {
+                "id": "CONST-WIRE-ACTIVE",
+                "label": "Active Account Status",
+                "value": "ACTIVE",
+                "value_type": "STRING",
+                "const_type": "SYSTEM",
+                "description": "Status required to submit a wire transfer.",
+                "review_flag": false
+              },
+              "conditions": []
+            }
+          ],
+          "formulas": [],
+          "policy_branch": null,
+          "lookup_ref": null,
+          "actions": [
+            {
+              "id": "ACT-WIRE-001",
+              "action_type": "RAISE_ERROR",
+              "error_code": -20010,
+              "message": "Wire transfers require an active account.",
+              "description": "Reject the transfer when the account is inactive."
+            }
+          ],
+          "data_inputs": [
+            {
+              "id": "DI-WIRE-ACCOUNT-ID",
+              "label": "Account Identifier",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_account_id",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-AMOUNT",
+              "label": "Transfer Amount",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_amount",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-DEST",
+              "label": "Destination Country",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_dest_country",
+              "data_type": "VARCHAR",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-BALANCE",
+              "label": "Account Balance",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "ACCOUNTS.BALANCE",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-STATUS",
+              "label": "Account Status",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "ACCOUNTS.STATUS",
+              "data_type": "VARCHAR",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-SYSDATE",
+              "label": "Current System Date",
+              "source_type": "SYSDATE",
+              "source_ref": "SYSDATE",
+              "data_type": "DATE",
+              "is_key": false,
+              "nullable": false
+            }
+          ]
+        },
+        {
+          "id": "BR-WIRE-002",
+          "label": "Route High Value Foreign Transfers For Review",
+          "description": "Transfers above 10000 to destinations outside Australia are routed to compliance review; otherwise the funds and debit rule applies.",
+          "rule_type": "CONSTRAINT",
+          "priority": 2,
+          "derived_values": [],
+          "conditions": [
+            {
+              "id": "COND-WIRE-002",
+              "label": "High Value Foreign Transfer",
+              "operator": null,
+              "logical_op": "AND",
+              "left_operand": null,
+              "right_operand": null,
+              "conditions": [
+                {
+                  "id": "COND-WIRE-002A",
+                  "label": "Amount Above Ten Thousand",
+                  "operator": "GT",
+                  "logical_op": "NONE",
+                  "left_operand": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-WIRE-AMOUNT"
+                  },
+                  "right_operand": {
+                    "id": "CONST-WIRE-10000",
+                    "label": "Compliance Review Threshold",
+                    "value": 10000,
+                    "value_type": "NUMERIC",
+                    "const_type": "REGULATORY",
+                    "description": "Transfers above this amount require additional review when sent abroad.",
+                    "review_flag": true
+                  },
+                  "conditions": []
+                },
+                {
+                  "id": "COND-WIRE-002B",
+                  "label": "Destination Is Not Australia",
+                  "operator": "NEQ",
+                  "logical_op": "NONE",
+                  "left_operand": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-WIRE-DEST"
+                  },
+                  "right_operand": {
+                    "id": "CONST-WIRE-AU",
+                    "label": "Domestic Country Code",
+                    "value": "AU",
+                    "value_type": "STRING",
+                    "const_type": "SYSTEM",
+                    "description": "Domestic destination code exempt from foreign transfer review.",
+                    "review_flag": false
+                  },
+                  "conditions": []
+                }
+              ],
+              "then_branch": {
+                "id": "ACT-WIRE-002",
+                "action_type": "INSERT",
+                "target": "COMPLIANCE_QUEUE",
+                "columns": [
+                  {
+                    "column_name": "ACCOUNT_ID",
+                    "value": {
+                      "type": "DATA_INPUT",
+                      "ref": "DI-WIRE-ACCOUNT-ID"
+                    }
+                  },
+                  {
+                    "column_name": "AMOUNT",
+                    "value": {
+                      "type": "DATA_INPUT",
+                      "ref": "DI-WIRE-AMOUNT"
+                    }
+                  },
+                  {
+                    "column_name": "DESTINATION",
+                    "value": {
+                      "type": "DATA_INPUT",
+                      "ref": "DI-WIRE-DEST"
+                    }
+                  },
+                  {
+                    "column_name": "STATUS",
+                    "value": {
+                      "id": "CONST-WIRE-PENDING-REVIEW",
+                      "label": "Pending Review Status",
+                      "value": "PENDING_REVIEW",
+                      "value_type": "STRING",
+                      "const_type": "SYSTEM",
+                      "description": "Compliance queue status for flagged transfers.",
+                      "review_flag": false
+                    }
+                  },
+                  {
+                    "column_name": "FLAGGED_DATE",
+                    "value": {
+                      "type": "DATA_INPUT",
+                      "ref": "DI-WIRE-SYSDATE"
+                    }
+                  }
+                ],
+                "description": "Insert the transfer into the compliance review queue."
+              },
+              "else_branch": {
+                "id": "BR-WIRE-003",
+                "label": "Check Funds And Debit Account",
+                "description": "Transfers not sent to compliance must have sufficient funds including the wire fee before the account is debited.",
+                "rule_type": "CONSTRAINT",
+                "priority": 3,
+                "derived_values": [],
+                "conditions": [
+                  {
+                    "id": "COND-WIRE-003-ROOT",
+                    "label": "Funds Check Branch",
+                    "operator": null,
+                    "logical_op": "AND",
+                    "left_operand": null,
+                    "right_operand": null,
+                    "conditions": [
+                      {
+                        "id": "COND-WIRE-003",
+                        "label": "Insufficient Balance Including Wire Fee",
+                        "operator": "LT",
+                        "logical_op": "NONE",
+                        "left_operand": {
+                          "type": "DATA_INPUT",
+                          "ref": "DI-WIRE-BALANCE"
+                        },
+                        "right_operand": {
+                          "type": "FORMULA",
+                          "ref": "FORM-WIRE-001"
+                        },
+                        "conditions": []
+                      }
+                    ],
+                    "then_branch": {
+                      "id": "ACT-WIRE-003",
+                      "action_type": "RAISE_ERROR",
+                      "error_code": -20011,
+                      "message": "Insufficient funds including wire fee.",
+                      "description": "Reject the transfer when the account cannot cover amount plus fee."
+                    },
+                    "else_branch": {
+                      "id": "ACT-WIRE-004",
+                      "action_type": "UPDATE",
+                      "target": "ACCOUNTS.BALANCE",
+                      "value": {
+                        "type": "FORMULA",
+                        "ref": "FORM-WIRE-002"
+                      },
+                      "description": "Debit the account by the transfer amount and wire fee."
+                    }
+                  }
+                ],
+                "formulas": [
+                  {
+                    "id": "FORM-WIRE-001",
+                    "label": "Transfer Amount Plus Wire Fee",
+                    "expression": "amount + 25.00",
+                    "result_type": "MONETARY",
+                    "operands": [
+                      {
+                        "type": "DATA_INPUT",
+                        "ref": "DI-WIRE-AMOUNT"
+                      },
+                      {
+                        "id": "CONST-WIRE-FEE",
+                        "label": "Wire Transfer Fee",
+                        "value": 25.0,
+                        "value_type": "NUMERIC",
+                        "const_type": "LITERAL",
+                        "description": "Fixed wire transfer fee added to each debit.",
+                        "review_flag": true
+                      }
+                    ]
+                  },
+                  {
+                    "id": "FORM-WIRE-002",
+                    "label": "Post Transfer Balance",
+                    "expression": "balance - amount - 25.00",
+                    "result_type": "MONETARY",
+                    "operands": [
+                      {
+                        "type": "DATA_INPUT",
+                        "ref": "DI-WIRE-BALANCE"
+                      },
+                      {
+                        "type": "DATA_INPUT",
+                        "ref": "DI-WIRE-AMOUNT"
+                      },
+                      {
+                        "id": "CONST-WIRE-FEE",
+                        "label": "Wire Transfer Fee",
+                        "value": 25.0,
+                        "value_type": "NUMERIC",
+                        "const_type": "LITERAL",
+                        "description": "Fixed wire transfer fee added to each debit.",
+                        "review_flag": true
+                      }
+                    ]
+                  }
+                ],
+                "policy_branch": null,
+                "lookup_ref": null,
+                "actions": [],
+                "data_inputs": [
+                  {
+                    "id": "DI-WIRE-ACCOUNT-ID",
+                    "label": "Account Identifier",
+                    "source_type": "ARGUMENT",
+                    "source_ref": ":p_account_id",
+                    "data_type": "NUMBER",
+                    "is_key": true,
+                    "nullable": false
+                  },
+                  {
+                    "id": "DI-WIRE-AMOUNT",
+                    "label": "Transfer Amount",
+                    "source_type": "ARGUMENT",
+                    "source_ref": ":p_amount",
+                    "data_type": "NUMBER",
+                    "is_key": true,
+                    "nullable": false
+                  },
+                  {
+                    "id": "DI-WIRE-BALANCE",
+                    "label": "Account Balance",
+                    "source_type": "TABLE_COLUMN",
+                    "source_ref": "ACCOUNTS.BALANCE",
+                    "data_type": "NUMBER",
+                    "is_key": true,
+                    "nullable": false
+                  }
+                ]
+              }
+            }
+          ],
+          "formulas": [],
+          "policy_branch": null,
+          "lookup_ref": null,
+          "actions": [],
+          "data_inputs": [
+            {
+              "id": "DI-WIRE-ACCOUNT-ID",
+              "label": "Account Identifier",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_account_id",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-AMOUNT",
+              "label": "Transfer Amount",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_amount",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-DEST",
+              "label": "Destination Country",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_dest_country",
+              "data_type": "VARCHAR",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-BALANCE",
+              "label": "Account Balance",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "ACCOUNTS.BALANCE",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-STATUS",
+              "label": "Account Status",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "ACCOUNTS.STATUS",
+              "data_type": "VARCHAR",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-WIRE-SYSDATE",
+              "label": "Current System Date",
+              "source_type": "SYSDATE",
+              "source_ref": "SYSDATE",
+              "data_type": "DATE",
+              "is_key": false,
+              "nullable": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

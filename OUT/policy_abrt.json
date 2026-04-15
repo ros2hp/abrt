@@ -1,0 +1,154 @@
+{
+  "abrt_version": "1.8",
+  "application": "PL/SQL Business Rule Test Cases",
+  "source_file": "IN/policy.sql",
+  "trigger_operations": [],
+  "business_operations": [
+    {
+      "id": "CALCULATE_OVERTIME_PAY",
+      "label": "Calculate Overtime Pay",
+      "source": "CALCULATE_OVERTIME_PAY",
+      "operation_type": "PROCESS",
+      "business_rules": [
+        {
+          "id": "BR-OVT-001",
+          "label": "Apply Overtime Rate For Hours Above Forty",
+          "description": "Employees who work more than 40 hours receive overtime pay at 1.5 times the hourly rate for hours above 40.",
+          "rule_type": "POLICY",
+          "priority": 1,
+          "derived_values": [],
+          "formulas": [
+            {
+              "id": "FORM-OVT-001",
+              "label": "Overtime Amount",
+              "expression": "(hours_worked - 40) * hourly_rate * 1.5",
+              "result_type": "MONETARY",
+              "operands": [
+                {
+                  "type": "DATA_INPUT",
+                  "ref": "DI-OVT-HOURS"
+                },
+                {
+                  "id": "CONST-OVT-40",
+                  "label": "Standard Hours Threshold",
+                  "value": 40,
+                  "value_type": "NUMERIC",
+                  "const_type": "LITERAL",
+                  "description": "Hours threshold above which overtime begins.",
+                  "review_flag": true
+                },
+                {
+                  "type": "DATA_INPUT",
+                  "ref": "DI-OVT-RATE"
+                },
+                {
+                  "id": "CONST-OVT-1P5",
+                  "label": "Overtime Multiplier",
+                  "value": 1.5,
+                  "value_type": "NUMERIC",
+                  "const_type": "LITERAL",
+                  "description": "Multiplier applied to hourly rate for overtime hours.",
+                  "review_flag": true
+                }
+              ]
+            }
+          ],
+          "policy_branch": {
+            "id": "PB-OVT-001",
+            "label": "Overtime Eligibility Decision",
+            "discriminator_type": "SEARCHED",
+            "discriminator": null,
+            "bracket_type": "TIERED",
+            "branches": [
+              {
+                "when_type": "CONDITION",
+                "label": "Hours Above Forty",
+                "condition": {
+                  "id": "COND-OVT-001",
+                  "label": "Hours Worked Above Forty",
+                  "operator": "GT",
+                  "logical_op": "NONE",
+                  "left_operand": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-OVT-HOURS"
+                  },
+                  "right_operand": {
+                    "id": "CONST-OVT-40",
+                    "label": "Standard Hours Threshold",
+                    "value": 40,
+                    "value_type": "NUMERIC",
+                    "const_type": "LITERAL",
+                    "description": "Hours threshold above which overtime begins.",
+                    "review_flag": true
+                  },
+                  "conditions": []
+                },
+                "rule_set": [
+                  {
+                    "id": "ACT-OVT-001",
+                    "action_type": "UPDATE",
+                    "target": "PAYROLL.OVERTIME_AMOUNT",
+                    "value": {
+                      "type": "FORMULA",
+                      "ref": "FORM-OVT-001"
+                    },
+                    "description": "Update the payroll overtime amount for the employee."
+                  }
+                ]
+              }
+            ]
+          },
+          "lookup_ref": null,
+          "actions": [],
+          "data_inputs": [
+            {
+              "id": "DI-OVT-EMP-ID",
+              "label": "Employee Identifier",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_emp_id",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-OVT-HOURS",
+              "label": "Hours Worked",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "EMPLOYEES.HOURS_WORKED",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-OVT-DEPT",
+              "label": "Employee Department",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "EMPLOYEES.DEPARTMENT",
+              "data_type": "VARCHAR",
+              "is_key": false,
+              "nullable": false
+            },
+            {
+              "id": "DI-OVT-GRADE",
+              "label": "Salary Grade",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "EMPLOYEES.SALARY_GRADE",
+              "data_type": "NUMBER",
+              "is_key": false,
+              "nullable": false
+            },
+            {
+              "id": "DI-OVT-RATE",
+              "label": "Hourly Rate",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "EMPLOYEES.HOURLY_RATE",
+              "data_type": "NUMBER",
+              "is_key": false,
+              "nullable": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

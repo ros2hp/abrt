@@ -1,0 +1,77 @@
+{
+  "abrt_version": "1.11",
+  "application": "ORDER_MANAGEMENT",
+  "source_file": "comment.sql",
+  "notes": [
+    "Function declared as 'get_status_2' (line 1) but END label reads 'END get_status' (line 32) — the '_2' suffix is missing from the END label. The CREATE declaration name is used as authoritative; the END label discrepancy is a source defect.",
+    "Lines 13–21 contain a block comment (/* ... */) that duplicates the active FETCH/IF/CLOSE logic on lines 22–27. The commented block appears to be a copy-paste remnant from editing. Only the active code (lines 22–27) is modelled."
+  ],
+  "trigger_operations": [],
+  "business_operations": [
+    {
+      "id": "BO-GS2-001",
+      "label": "Get Order Status v2",
+      "source": "GET_STATUS_2",
+      "operation_type": "QUERY",
+      "called_by": [],
+      "business_rules": [
+        {
+          "id": "BR-GS2-001",
+          "label": "Order Status Retrieval",
+          "description": "Retrieves the current status of an order by order_id. If no matching order exists, the function explicitly returns NULL. The cursor OPEN/FETCH/CLOSE mechanics are infrastructure; the business logic is the lookup and its null fallback.",
+          "rule_type": "LOOKUP",
+          "priority": 1,
+          "source_lines": "1-32",
+          "derived_values": [],
+          "conditions": [],
+          "formulas": [],
+          "policy_branch": null,
+          "lookup_ref": {
+            "id": "LKP-GS2-001",
+            "label": "Order Status",
+            "table_name": "ORDERS",
+            "key_columns": [
+              {
+                "id": "DI-GS2-001",
+                "label": "Order ID",
+                "source_type": "ARGUMENT",
+                "source_ref": ":p_order_id",
+                "data_type": "NUMBER",
+                "is_key": true,
+                "nullable": false
+              }
+            ],
+            "result_column": "STATUS",
+            "lookup_type": "CATEGORY",
+            "fallback": {
+              "id": "C-GS2-001",
+              "label": "Missing Order Status Default",
+              "value": null,
+              "value_type": "STRING",
+              "const_type": "LITERAL",
+              "description": "NULL returned when no order matches the supplied order_id; the %NOTFOUND branch explicitly assigns NULL rather than relying on uninitialised variable behaviour",
+              "review_flag": false
+            }
+          },
+          "actions": [
+            {
+              "id": "ACT-GS2-001",
+              "action_type": "RETURN",
+              "description": "Return the retrieved order status, or NULL if the order was not found",
+              "value": {
+                "id": "DI-GS2-002",
+                "label": "Order Status",
+                "source_type": "TABLE_COLUMN",
+                "source_ref": "ORDERS.STATUS",
+                "data_type": "VARCHAR",
+                "is_key": false,
+                "nullable": true
+              }
+            }
+          ],
+          "data_inputs": []
+        }
+      ]
+    }
+  ]
+}

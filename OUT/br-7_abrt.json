@@ -1,0 +1,428 @@
+{
+  "abrt_version": "1.8",
+  "application": "PL/SQL Business Rule Test Cases",
+  "source_file": "IN/br-7.sql",
+  "trigger_operations": [],
+  "business_operations": [
+    {
+      "id": "CALCULATE_PREMIUM",
+      "label": "Calculate Insurance Premium",
+      "source": "CALCULATE_PREMIUM",
+      "operation_type": "CALCULATION",
+      "business_rules": [
+        {
+          "id": "BR-PREM-001",
+          "label": "Look Up Current Base Premium Rate",
+          "description": "Retrieve the most recent premium base rate for the policy type effective on or before today.",
+          "rule_type": "LOOKUP",
+          "priority": 1,
+          "derived_values": [],
+          "conditions": [],
+          "formulas": [],
+          "policy_branch": null,
+          "lookup_ref": {
+            "id": "LKP-PREM-001",
+            "label": "Current Premium Base Rate",
+            "table_name": "PREMIUM_RATES",
+            "key_columns": [
+              {
+                "type": "DATA_INPUT",
+                "ref": "DI-PREM-POLICY-TYPE"
+              }
+            ],
+            "result_column": "BASE_RATE",
+            "lookup_type": "RATE",
+            "effective_date_col": "EFFECTIVE_DATE"
+          },
+          "actions": [],
+          "data_inputs": [
+            {
+              "id": "DI-PREM-POLICY-TYPE",
+              "label": "Policy Type",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_policy_type",
+              "data_type": "VARCHAR",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-PREM-AGE",
+              "label": "Insured Age",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_age",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-PREM-SUM-INSURED",
+              "label": "Sum Insured",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_sum_insured",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-PREM-BASE-RATE",
+              "label": "Base Premium Rate",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "PREMIUM_RATES.BASE_RATE",
+              "data_type": "NUMBER",
+              "is_key": false,
+              "nullable": false
+            },
+            {
+              "id": "DI-PREM-SYSDATE",
+              "label": "Current System Date",
+              "source_type": "SYSDATE",
+              "source_ref": "SYSDATE",
+              "data_type": "DATE",
+              "is_key": false,
+              "nullable": false
+            }
+          ]
+        },
+        {
+          "id": "BR-PREM-002",
+          "label": "Apply Age Loading And Minimum Premium",
+          "description": "Premium uses age-based loading factors and is floored at 150.",
+          "rule_type": "POLICY",
+          "priority": 2,
+          "derived_values": [],
+          "formulas": [
+            {
+              "id": "FORM-PREM-001",
+              "label": "Premium With 1.8 Loading",
+              "expression": "GREATEST(sum_insured * base_rate * 1.8, 150)",
+              "result_type": "MONETARY",
+              "operands": [
+                {
+                  "type": "DATA_INPUT",
+                  "ref": "DI-PREM-SUM-INSURED"
+                },
+                {
+                  "type": "DATA_INPUT",
+                  "ref": "DI-PREM-BASE-RATE"
+                },
+                {
+                  "id": "CONST-PREM-1P8",
+                  "label": "Young Insured Loading",
+                  "value": 1.8,
+                  "value_type": "NUMERIC",
+                  "const_type": "LITERAL",
+                  "description": "Age loading multiplier for insureds under twenty five.",
+                  "review_flag": true
+                }
+              ],
+              "wrapper_fn": "GREATEST",
+              "wrapper_args": [
+                {
+                  "id": "CONST-PREM-150",
+                  "label": "Minimum Premium",
+                  "value": 150,
+                  "value_type": "NUMERIC",
+                  "const_type": "LITERAL",
+                  "description": "Minimum premium floor applied after rate and loading calculation.",
+                  "review_flag": true
+                }
+              ]
+            },
+            {
+              "id": "FORM-PREM-002",
+              "label": "Premium With Standard Loading",
+              "expression": "GREATEST(sum_insured * base_rate * 1.0, 150)",
+              "result_type": "MONETARY",
+              "operands": [
+                {
+                  "type": "DATA_INPUT",
+                  "ref": "DI-PREM-SUM-INSURED"
+                },
+                {
+                  "type": "DATA_INPUT",
+                  "ref": "DI-PREM-BASE-RATE"
+                },
+                {
+                  "id": "CONST-PREM-1P0",
+                  "label": "Standard Age Loading",
+                  "value": 1.0,
+                  "value_type": "NUMERIC",
+                  "const_type": "SYSTEM",
+                  "description": "Standard age loading multiplier.",
+                  "review_flag": false
+                }
+              ],
+              "wrapper_fn": "GREATEST",
+              "wrapper_args": [
+                {
+                  "id": "CONST-PREM-150",
+                  "label": "Minimum Premium",
+                  "value": 150,
+                  "value_type": "NUMERIC",
+                  "const_type": "LITERAL",
+                  "description": "Minimum premium floor applied after rate and loading calculation.",
+                  "review_flag": true
+                }
+              ]
+            },
+            {
+              "id": "FORM-PREM-003",
+              "label": "Premium With 2.2 Loading",
+              "expression": "GREATEST(sum_insured * base_rate * 2.2, 150)",
+              "result_type": "MONETARY",
+              "operands": [
+                {
+                  "type": "DATA_INPUT",
+                  "ref": "DI-PREM-SUM-INSURED"
+                },
+                {
+                  "type": "DATA_INPUT",
+                  "ref": "DI-PREM-BASE-RATE"
+                },
+                {
+                  "id": "CONST-PREM-2P2",
+                  "label": "Senior Insured Loading",
+                  "value": 2.2,
+                  "value_type": "NUMERIC",
+                  "const_type": "LITERAL",
+                  "description": "Age loading multiplier for insureds older than sixty five.",
+                  "review_flag": true
+                }
+              ],
+              "wrapper_fn": "GREATEST",
+              "wrapper_args": [
+                {
+                  "id": "CONST-PREM-150",
+                  "label": "Minimum Premium",
+                  "value": 150,
+                  "value_type": "NUMERIC",
+                  "const_type": "LITERAL",
+                  "description": "Minimum premium floor applied after rate and loading calculation.",
+                  "review_flag": true
+                }
+              ]
+            }
+          ],
+          "policy_branch": {
+            "id": "PB-PREM-001",
+            "label": "Age Loading Decision",
+            "discriminator_type": "SEARCHED",
+            "discriminator": null,
+            "bracket_type": "TIERED",
+            "branches": [
+              {
+                "when_type": "CONDITION",
+                "label": "Under Twenty Five Loading",
+                "condition": {
+                  "id": "COND-PREM-001",
+                  "label": "Age Below Twenty Five",
+                  "operator": "LT",
+                  "logical_op": "NONE",
+                  "left_operand": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-PREM-AGE"
+                  },
+                  "right_operand": {
+                    "id": "CONST-PREM-25",
+                    "label": "Young Driver Age Threshold",
+                    "value": 25,
+                    "value_type": "NUMERIC",
+                    "const_type": "LITERAL",
+                    "description": "Age below which the high loading applies.",
+                    "review_flag": true
+                  },
+                  "conditions": []
+                },
+                "rule_set": [
+                  {
+                    "id": "FORM-PREM-001",
+                    "label": "Premium With 1.8 Loading",
+                    "expression": "GREATEST(sum_insured * base_rate * 1.8, 150)",
+                    "result_type": "MONETARY",
+                    "operands": [
+                      {
+                        "type": "DATA_INPUT",
+                        "ref": "DI-PREM-SUM-INSURED"
+                      },
+                      {
+                        "type": "DATA_INPUT",
+                        "ref": "DI-PREM-BASE-RATE"
+                      },
+                      {
+                        "id": "CONST-PREM-1P8",
+                        "label": "Young Insured Loading",
+                        "value": 1.8,
+                        "value_type": "NUMERIC",
+                        "const_type": "LITERAL",
+                        "description": "Age loading multiplier for insureds under twenty five.",
+                        "review_flag": true
+                      }
+                    ],
+                    "wrapper_fn": "GREATEST",
+                    "wrapper_args": [
+                      {
+                        "id": "CONST-PREM-150",
+                        "label": "Minimum Premium",
+                        "value": 150,
+                        "value_type": "NUMERIC",
+                        "const_type": "LITERAL",
+                        "description": "Minimum premium floor applied after rate and loading calculation.",
+                        "review_flag": true
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "when_type": "CONDITION",
+                "label": "Standard Loading",
+                "condition": {
+                  "id": "COND-PREM-002",
+                  "label": "Age Up To Sixty Five",
+                  "operator": "LTE",
+                  "logical_op": "NONE",
+                  "left_operand": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-PREM-AGE"
+                  },
+                  "right_operand": {
+                    "id": "CONST-PREM-65",
+                    "label": "Senior Age Threshold",
+                    "value": 65,
+                    "value_type": "NUMERIC",
+                    "const_type": "LITERAL",
+                    "description": "Upper age bound for the standard loading.",
+                    "review_flag": true
+                  },
+                  "conditions": []
+                },
+                "rule_set": [
+                  {
+                    "id": "FORM-PREM-002",
+                    "label": "Premium With Standard Loading",
+                    "expression": "GREATEST(sum_insured * base_rate * 1.0, 150)",
+                    "result_type": "MONETARY",
+                    "operands": [
+                      {
+                        "type": "DATA_INPUT",
+                        "ref": "DI-PREM-SUM-INSURED"
+                      },
+                      {
+                        "type": "DATA_INPUT",
+                        "ref": "DI-PREM-BASE-RATE"
+                      },
+                      {
+                        "id": "CONST-PREM-1P0",
+                        "label": "Standard Age Loading",
+                        "value": 1.0,
+                        "value_type": "NUMERIC",
+                        "const_type": "SYSTEM",
+                        "description": "Standard age loading multiplier.",
+                        "review_flag": false
+                      }
+                    ],
+                    "wrapper_fn": "GREATEST",
+                    "wrapper_args": [
+                      {
+                        "id": "CONST-PREM-150",
+                        "label": "Minimum Premium",
+                        "value": 150,
+                        "value_type": "NUMERIC",
+                        "const_type": "LITERAL",
+                        "description": "Minimum premium floor applied after rate and loading calculation.",
+                        "review_flag": true
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "when_type": "DEFAULT",
+                "label": "Senior Loading",
+                "rule_set": [
+                  {
+                    "id": "FORM-PREM-003",
+                    "label": "Premium With 2.2 Loading",
+                    "expression": "GREATEST(sum_insured * base_rate * 2.2, 150)",
+                    "result_type": "MONETARY",
+                    "operands": [
+                      {
+                        "type": "DATA_INPUT",
+                        "ref": "DI-PREM-SUM-INSURED"
+                      },
+                      {
+                        "type": "DATA_INPUT",
+                        "ref": "DI-PREM-BASE-RATE"
+                      },
+                      {
+                        "id": "CONST-PREM-2P2",
+                        "label": "Senior Insured Loading",
+                        "value": 2.2,
+                        "value_type": "NUMERIC",
+                        "const_type": "LITERAL",
+                        "description": "Age loading multiplier for insureds older than sixty five.",
+                        "review_flag": true
+                      }
+                    ],
+                    "wrapper_fn": "GREATEST",
+                    "wrapper_args": [
+                      {
+                        "id": "CONST-PREM-150",
+                        "label": "Minimum Premium",
+                        "value": 150,
+                        "value_type": "NUMERIC",
+                        "const_type": "LITERAL",
+                        "description": "Minimum premium floor applied after rate and loading calculation.",
+                        "review_flag": true
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "lookup_ref": null,
+          "actions": [],
+          "data_inputs": [
+            {
+              "id": "DI-PREM-POLICY-TYPE",
+              "label": "Policy Type",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_policy_type",
+              "data_type": "VARCHAR",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-PREM-AGE",
+              "label": "Insured Age",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_age",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-PREM-SUM-INSURED",
+              "label": "Sum Insured",
+              "source_type": "ARGUMENT",
+              "source_ref": ":p_sum_insured",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-PREM-BASE-RATE",
+              "label": "Base Premium Rate",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "PREMIUM_RATES.BASE_RATE",
+              "data_type": "NUMBER",
+              "is_key": false,
+              "nullable": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

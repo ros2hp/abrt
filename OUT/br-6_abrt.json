@@ -1,0 +1,214 @@
+{
+  "abrt_version": "1.8",
+  "application": "PL/SQL Business Rule Test Cases",
+  "source_file": "IN/br-6.sql",
+  "trigger_operations": [
+    {
+      "id": "TRG-AUDIT-SENSITIVE-CHANGES",
+      "label": "Audit Sensitive Customer Account Changes",
+      "trigger_name": "TRG_AUDIT_SENSITIVE_CHANGES",
+      "table_name": "CUSTOMER_ACCOUNTS",
+      "trigger_timing": "AFTER",
+      "trigger_event": "INSERT_UPDATE",
+      "trigger_level": "ROW",
+      "enabled": true,
+      "source_lines": "3-13",
+      "business_rules": [
+        {
+          "id": "BR-TRG-AUD-001",
+          "label": "Audit High Value Account Changes",
+          "description": "When the new balance exceeds 100000, write an audit record describing the account change.",
+          "rule_type": "DERIVATION",
+          "priority": 1,
+          "derived_values": [],
+          "conditions": [
+            {
+              "id": "COND-TRG-AUD-001",
+              "label": "High Value Balance",
+              "operator": "GT",
+              "logical_op": "NONE",
+              "left_operand": {
+                "type": "DATA_INPUT",
+                "ref": "DI-TRG-AUD-NEW-BALANCE"
+              },
+              "right_operand": {
+                "id": "CONST-TRG-AUD-THRESHOLD",
+                "label": "High Value Balance Threshold",
+                "value": 100000,
+                "value_type": "NUMERIC",
+                "const_type": "LITERAL",
+                "description": "Balance threshold for sensitive account audit logging.",
+                "review_flag": true
+              },
+              "conditions": []
+            }
+          ],
+          "formulas": [
+            {
+              "id": "FORM-TRG-AUD-001",
+              "label": "Audit Action Type",
+              "expression": "CASE WHEN :OLD.account_id IS NULL THEN 'INSERT' ELSE 'UPDATE' END",
+              "result_type": "CATEGORY",
+              "operands": [
+                {
+                  "type": "DATA_INPUT",
+                  "ref": "DI-TRG-AUD-OLD-ACCOUNT-ID"
+                },
+                {
+                  "id": "CONST-TRG-AUD-INSERT",
+                  "label": "Insert Audit Action",
+                  "value": "INSERT",
+                  "value_type": "STRING",
+                  "const_type": "SYSTEM",
+                  "description": "Audit action label for inserted rows.",
+                  "review_flag": false
+                },
+                {
+                  "id": "CONST-TRG-AUD-UPDATE",
+                  "label": "Update Audit Action",
+                  "value": "UPDATE",
+                  "value_type": "STRING",
+                  "const_type": "SYSTEM",
+                  "description": "Audit action label for updated rows.",
+                  "review_flag": false
+                }
+              ]
+            }
+          ],
+          "policy_branch": null,
+          "lookup_ref": null,
+          "actions": [
+            {
+              "id": "ACT-TRG-AUD-001",
+              "action_type": "INSERT",
+              "target": "AUDIT_LOG",
+              "columns": [
+                {
+                  "column_name": "TABLE_NAME",
+                  "value": {
+                    "id": "CONST-TRG-AUD-TABLE",
+                    "label": "Audited Table Name",
+                    "value": "CUSTOMER_ACCOUNTS",
+                    "value_type": "STRING",
+                    "const_type": "SYSTEM",
+                    "description": "Table name recorded in the audit log.",
+                    "review_flag": false
+                  }
+                },
+                {
+                  "column_name": "RECORD_ID",
+                  "value": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-TRG-AUD-NEW-ACCOUNT-ID"
+                  }
+                },
+                {
+                  "column_name": "ACTION_TYPE",
+                  "value": {
+                    "type": "FORMULA",
+                    "ref": "FORM-TRG-AUD-001"
+                  }
+                },
+                {
+                  "column_name": "OLD_VALUE",
+                  "value": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-TRG-AUD-OLD-BALANCE-TEXT"
+                  }
+                },
+                {
+                  "column_name": "NEW_VALUE",
+                  "value": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-TRG-AUD-NEW-BALANCE-TEXT"
+                  }
+                },
+                {
+                  "column_name": "CHANGED_BY",
+                  "value": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-TRG-AUD-USER"
+                  }
+                },
+                {
+                  "column_name": "CHANGE_DATE",
+                  "value": {
+                    "type": "DATA_INPUT",
+                    "ref": "DI-TRG-AUD-SYSDATE"
+                  }
+                }
+              ],
+              "description": "Insert an audit row for high-value account changes."
+            }
+          ],
+          "data_inputs": [
+            {
+              "id": "DI-TRG-AUD-NEW-BALANCE",
+              "label": "New Account Balance",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "CUSTOMER_ACCOUNTS.BALANCE (:NEW)",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-TRG-AUD-NEW-ACCOUNT-ID",
+              "label": "New Account Identifier",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "CUSTOMER_ACCOUNTS.ACCOUNT_ID (:NEW)",
+              "data_type": "NUMBER",
+              "is_key": true,
+              "nullable": false
+            },
+            {
+              "id": "DI-TRG-AUD-OLD-ACCOUNT-ID",
+              "label": "Prior Account Identifier",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "CUSTOMER_ACCOUNTS.ACCOUNT_ID (:OLD)",
+              "data_type": "NUMBER",
+              "is_key": false,
+              "nullable": true
+            },
+            {
+              "id": "DI-TRG-AUD-OLD-BALANCE-TEXT",
+              "label": "Prior Balance Text",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "TO_CHAR(CUSTOMER_ACCOUNTS.BALANCE (:OLD))",
+              "data_type": "VARCHAR",
+              "is_key": false,
+              "nullable": true
+            },
+            {
+              "id": "DI-TRG-AUD-NEW-BALANCE-TEXT",
+              "label": "New Balance Text",
+              "source_type": "TABLE_COLUMN",
+              "source_ref": "TO_CHAR(CUSTOMER_ACCOUNTS.BALANCE (:NEW))",
+              "data_type": "VARCHAR",
+              "is_key": false,
+              "nullable": false
+            },
+            {
+              "id": "DI-TRG-AUD-USER",
+              "label": "Database User",
+              "source_type": "GLOBAL",
+              "source_ref": "USER",
+              "data_type": "VARCHAR",
+              "is_key": false,
+              "nullable": false
+            },
+            {
+              "id": "DI-TRG-AUD-SYSDATE",
+              "label": "Current System Date",
+              "source_type": "SYSDATE",
+              "source_ref": "SYSDATE",
+              "data_type": "DATE",
+              "is_key": false,
+              "nullable": false
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "business_operations": []
+}
