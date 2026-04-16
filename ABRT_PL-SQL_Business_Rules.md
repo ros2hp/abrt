@@ -38,16 +38,16 @@ BUSINESS_OPERATION
   source:       PL/SQL object name (package.procedure)
   operation_type: [ CALCULATION | VALIDATION | PROCESS | QUERY | EVENT ]
   children:     [ BUSINESS_RULE* ]
-  called_by:    [ { business_rule_id, function_node_id }* ]
+  called_by_operation_id: [ BUSINESS_OPERATION.id* ]
                   -- reverse index populated during the two-pass resolution step;
-                  -- each entry identifies the BUSINESS_RULE and the specific FUNCTION
-                  -- node whose called_operation_id resolves to this operation;
+                  -- each entry is the id of a BUSINESS_OPERATION that contains a
+                  -- FUNCTION node whose called_operation_id resolves to this operation;
                   -- empty for entry-point operations that are not called by any rule
 ```
 
-**`called_by`** — The reverse complement of `FUNCTION.called_operation_id`. When the two-pass resolution step upgrades a FUNCTION node's `called_operation_id` from `"_EXTERNAL_"` to a real `BUSINESS_OPERATION.id`, it simultaneously appends a `{ business_rule_id, function_node_id }` entry to the target operation's `called_by` array. This makes the invocation graph fully bidirectional and navigable in either direction without scanning the entire ABRT.
+**`called_by_operation_id`** — The reverse complement of `FUNCTION.called_operation_id`. When the two-pass resolution step upgrades a FUNCTION node's `called_operation_id` from `"_EXTERNAL_"` to a real `BUSINESS_OPERATION.id`, it simultaneously appends that calling operation's `id` to this array on the target operation. This makes the invocation graph fully bidirectional and navigable in either direction. To find the specific FUNCTION node(s) responsible for the call, scan the calling operation's FUNCTION nodes for a matching `called_operation_id`.
 
-Validators must enforce consistency: for every FUNCTION node where `called_operation_id` is a non-null, non-`"_EXTERNAL_"` id, the referenced BUSINESS_OPERATION must contain a matching `called_by` entry, and vice versa.
+Validators must enforce consistency: for every FUNCTION node where `called_operation_id` is a non-null, non-`"_EXTERNAL_"` id, the referenced BUSINESS_OPERATION must contain a matching entry in `called_by_operation_id`, and vice versa.
 
 **Operation Types:**
 - `CALCULATION` — Derives a value (e.g., benefit amount, tax, contribution rate)
@@ -81,6 +81,8 @@ BUSINESS_RULE
 ```
 
 **`derived_values`** — When a rule computes intermediate values before its main logic (e.g., `v_days_overdue := TRUNC(SYSDATE - v_due_date)`, `v_loyalty_years := TRUNC(MONTHS_BETWEEN(SYSDATE, join_date) / 12)`), those formulas are listed here. Derived values are evaluated in order before conditions and branches, making execution dependencies explicit. Child nodes reference derived values via `REF`.
+
+**`data_inputs`** — Contains only `DATA_INPUT` source nodes (procedure arguments, table columns, cursor fields, package variables, etc.). `CONSTANT` nodes must **never** appear here. Constants that parameterise a rule's logic belong inline as operands within the nodes where they are actually used — specifically `CONDITION.left_operand` / `CONDITION.right_operand`, `FORMULA.operands`, or `ACTION.arguments` / `ACTION.value`. Placing a `CONSTANT` in `data_inputs` is a structural error.
 
 **Rule Types:**
 - `CONSTRAINT` — A hard limit or prohibition (e.g., "Contribution must not exceed concessional cap")
@@ -650,7 +652,7 @@ LOOKUP_REF
 ABRT              ::= ( BUSINESS_OPERATION | TRIGGER_OPERATION )+
 
 BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+,
-                          called_by:[ { business_rule_id, function_node_id } ]* }
+                          called_by_operation_id:[ BUSINESS_OPERATION.id ]* }
 
 TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
                          trigger_timing, trigger_event, trigger_level,
@@ -751,6 +753,12 @@ REF               ::= { type, ref:id }
                        -- consuming rule uses REF. This creates an implicit dependency
                        -- ordering between the two rules.
 ```
+
+**When to use REF vs inline:**
+- **Boolean `true` / `false` — always inline, never REF.** Boolean constants are primitives with no meaningful definition to centralise. A `REF` pointing to a `CONSTANT { value: true }` forces the reader to chase a reference to learn something they already know from context. Write the full `CONSTANT` node inline every time, regardless of repetition.
+- **Non-boolean `CONSTANT` — inline at first use; REF on repeat use within the same rule or across rules in the same operation.** This avoids duplicating policy-significant values (status codes, threshold dates, sentinel strings) while keeping their definition in one place.
+- **`DATA_INPUT` — same rule as non-boolean constants.** Define the full node once; use REF elsewhere.
+- **`FORMULA` result — REF is the primary mechanism** for consuming a derived value across multiple conditions or rules. Always REF rather than re-expressing the formula.
 
 ---
 
@@ -1035,7 +1043,8 @@ When analysing PL/SQL code to build an ABRT, apply the following process:
 ### Step 0 — Separate Business Logic from Infrastructure Code
 Not all code within a procedure constitutes a business rule. Before extracting rules, identify and exclude **infrastructure/implementation logic** that serves the procedure's technical operation but carries no business meaning. Common patterns to exclude:
 - **Concurrency control** — advisory locks, `FOR UPDATE NOWAIT`, retry loops, `DBMS_LOCK.SLEEP`
-- **Audit/tracing** — logging inserts for operational observability (unless audit logging *is* the business rule, as in trigger-based audit trails)
+- **Audit/tracing** — logging inserts for operational observability
+- **Pure audit triggers** — database triggers whose sole purpose is to record history (e.g., calling a versioning procedure on every INSERT/UPDATE/DELETE with no filtering logic). These are infrastructure; do not extract them as ABRT content. If you encounter one, omit it entirely or record a one-line note in the parent operation's `notes` array explaining it was excluded as a pure audit trail. Distinguish from **notification/sync triggers** (which encode a business decision about *what changes matter* and *what downstream action results*) — those do contain extractable business rules.
 - **Resource assignment** — round-robin or load-balancing logic for assigning workers/assessors
 - **Identifier generation** — sequence-based reference numbers, batch ID calculation, string formatting
 - **Transaction control** — `COMMIT`, `ROLLBACK`, `SAVEPOINT`
@@ -1277,6 +1286,6 @@ ABRT
 *v1.7 adds COMPOSITE action_type with `steps` array for multi-action branch outcomes; extends `columns` attribute to multi-column UPDATE actions; adds cross-rule REF guidance; adds extraction Step 0 for separating business logic from infrastructure code*
 *v1.8 makes CONDITION node forms explicit: LEAF_CONDITION (operator set, logical_op=NONE, no children, no then/else_branch) and COMPOUND_CONDITION (operator=null, logical_op=AND/OR/NOT, children in conditions array) are mutually exclusive — setting both operator and logical_op on the same node is a grammar error; adds Rule Type Field Constraints table specifying required and prohibited child fields per rule_type, making rule_type a mechanically validatable structural constraint rather than a semantic label only*
 *v1.9 adds FUNCTION node (§2.6) for derived values sourced from user-defined PL/SQL function calls, distinct from FORMULA (inline expressions); FUNCTION carries operation_id (null for built-ins, "_EXTERNAL_" sentinel for unresolved user-defined functions, or resolved BUSINESS_OPERATION.id after two-pass resolution); derived_values updated to [(FORMULA | FUNCTION)*]; FUNCTION added as valid operand type in FORMULA; §3 FORMULA BNF corrected to add result_unit, named operands attribute, operator_seq, FUNCTION and REF as operand types, rounding attribute name, and children array — resolving gaps between §2.5 prose and §3 grammar; FUNCTION BNF added to §3*
-*v1.10 adds called_by array to BUSINESS_OPERATION — reverse index of all FUNCTION nodes whose called_operation_id resolves to this operation; each entry is { business_rule_id, function_node_id } making the invocation graph fully bidirectional; populated during the two-pass resolution step alongside called_operation_id resolution; validators enforce consistency between FUNCTION.called_operation_id and the corresponding called_by entry*
-*v1.11 renames FUNCTION.operation_id to FUNCTION.called_operation_id — disambiguates direction: the field identifies the operation being called (callee), not the operation doing the calling (caller); pairs symmetrically with BUSINESS_OPERATION.called_by*
+*v1.10 adds called_by_operation_id array to BUSINESS_OPERATION — reverse index of all BUSINESS_OPERATIONs that contain a FUNCTION node whose called_operation_id resolves to this operation; each entry is the calling BUSINESS_OPERATION.id making the invocation graph fully bidirectional; populated during the two-pass resolution step alongside called_operation_id resolution; validators enforce consistency between FUNCTION.called_operation_id and the corresponding called_by_operation_id entry*
+*v1.11 renames FUNCTION.operation_id to FUNCTION.called_operation_id — disambiguates direction: the field identifies the operation being called (callee), not the operation doing the calling (caller); pairs symmetrically with BUSINESS_OPERATION.called_by_operation_id*
 *v1.12 adds EXIT_LOOP to ACTION.action_type enum — maps to PL/SQL EXIT and EXIT WHEN constructs; use target to name an outer loop label, omit for innermost loop; EXIT WHEN is modelled as a CONDITION with EXIT_LOOP in then_branch; distinguishes loop exit from procedure exit (RETURN)*

@@ -11,7 +11,8 @@
       "Bash(rustc br7_rules.rs -o br7_rules --edition 2021)",
       "Bash(./br7_rules)",
       "Bash(rustc --test br7_rules.rs -o br7_rules_test --edition 2021)",
-      "Bash(./br7_rules_test)"
+      "Bash(./br7_rules_test)",
+      "Bash(ls /Users/rosspayne/COMM/claude/IN/*abrt*.json)"
     ]
   },
   "enabledMcpjsonServers": [
