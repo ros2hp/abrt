@@ -35,19 +35,64 @@ The top-level container. Corresponds to a PL/SQL package, stored procedure, or f
 BUSINESS_OPERATION
   id:           unique identifier (e.g., "CALC_MEMBER_BENEFIT")
   label:        human-readable name
-  source:       PL/SQL object name (package.procedure)
+  description:  plain English summary covering the full scope of the operation — what
+                  it does, what inputs it consumes, and what outcomes it produces
+  source:       canonical reference to the PL/SQL object — format: PACKAGE.procedure_name
+                  Derivation rules (apply in order):
+                  1. PACKAGE — use the package name from the CREATE PACKAGE BODY statement
+                     if one is present in the source file, converted to UPPER CASE.
+                     If no package statement exists (standalone procedure or function),
+                     fall back to the source file stem in UPPER CASE.
+                  2. procedure_name — use the name from the CREATE PROCEDURE or
+                     CREATE FUNCTION statement, converted to lower case.
+                  3. If PACKAGE and procedure_name match case-insensitively, omit the
+                     prefix and use only the lower-case procedure/function name.
+                  Examples:
+                    pkg: SAS_MEMBERSHIPS_STATUS, proc: Previous_Period
+                      ⟹  "SAS_MEMBERSHIPS_STATUS.previous_period"
+                    pkg: APPLY_ORDER_DISCOUNT_TEST_PKG, proc: apply_order_discount_test
+                      ⟹  "APPLY_ORDER_DISCOUNT_TEST_PKG.apply_order_discount_test"
+                    pkg: APPLY_ORDER_DISCOUNT_TEST_PKG, proc: calc_discount_ratei_2
+                      ⟹  "APPLY_ORDER_DISCOUNT_TEST_PKG.calc_discount_ratei_2"
+                    no pkg, file: calc_discount_rate.sql, proc: calc_discount_rate
+                      ⟹  "calc_discount_rate"  (file stem matches proc name)
+                    no pkg, file: apply_order_discount.sql, proc: calc_discount_rate
+                      ⟹  "APPLY_ORDER_DISCOUNT.calc_discount_rate"
+                  This value is the resolution key matched by FUNCTION.target and
+                  ACTION(CALL).target during two-pass resolution.
   operation_type: [ CALCULATION | VALIDATION | PROCESS | QUERY | EVENT ]
   children:     [ BUSINESS_RULE* ]
-  called_by_operation_id: [ BUSINESS_OPERATION.id* ]
+  called_by_rule_id: [ string* ]
                   -- reverse index populated during the two-pass resolution step;
-                  -- each entry is the id of a BUSINESS_OPERATION that contains a
-                  -- FUNCTION node whose called_operation_id resolves to this operation;
+                  -- each entry has the format: "<CALLING_OPERATION_LABEL>" BUSINESS_RULE.id
+                  -- where CALLING_OPERATION_LABEL is the label of the BUSINESS_OPERATION
+                  -- that contains the matching FUNCTION or ACTION(CALL) node,
+                  -- enclosed in double-quote characters, followed by a space and
+                  -- the BUSINESS_RULE.id of the enclosing rule;
+                  -- example: "\"Apply Order Discount\" BR-BFC-001-002"
                   -- empty for entry-point operations that are not called by any rule
 ```
 
-**`called_by_operation_id`** — The reverse complement of `FUNCTION.called_operation_id`. When the two-pass resolution step upgrades a FUNCTION node's `called_operation_id` from `"_EXTERNAL_"` to a real `BUSINESS_OPERATION.id`, it simultaneously appends that calling operation's `id` to this array on the target operation. This makes the invocation graph fully bidirectional and navigable in either direction. To find the specific FUNCTION node(s) responsible for the call, scan the calling operation's FUNCTION nodes for a matching `called_operation_id`.
+**`called_by_rule_id`** — The reverse complement of `target` on both `FUNCTION` and `ACTION(CALL)` nodes. When the two-pass resolution step matches a node's `target` against a `BUSINESS_OPERATION.source`, it appends a composite entry to this array on the matched operation. Each entry is the calling `BUSINESS_OPERATION.label` (enclosed in double-quote characters) followed by a space and the enclosing `BUSINESS_RULE.id` — for example `"\"Apply Order Discount\" BR-BFC-001-002"`. This makes the calling operation immediately readable without having to look up the rule ID.
 
-Validators must enforce consistency: for every FUNCTION node where `called_operation_id` is a non-null, non-`"_EXTERNAL_"` id, the referenced BUSINESS_OPERATION must contain a matching entry in `called_by_operation_id`, and vice versa.
+Validators must enforce consistency: for every `FUNCTION` node or `ACTION(CALL)` node whose `target` is not `"_EXTERNAL_"` and matches a known `BUSINESS_OPERATION.source`, that operation must contain a matching entry in `called_by_rule_id` in the form `"<calling_operation_label>" <BUSINESS_RULE.id>`, and vice versa.
+
+**`description` guidance (BUSINESS_OPERATION):**
+- Write a plain English summary that covers the full scope of the operation: what business activity it performs, what data it consumes, and what it produces or changes. A reader unfamiliar with the code should understand the operation's purpose without reading the source.
+- Scope is the entire procedure or function — all procedures, loops, and side effects within it.
+- **PL/SQL identifiers are not acronyms.** Do not use PL/SQL variable names, parameter names, cursor names, or column names (e.g., `pMshpID`, `vPerID`, `crMshp`, `Per_ID`) as terms in the description. Express the concept in plain English business vocabulary (e.g., "membership identifier", "person identifier") instead.
+- **Acronym rule — genuine business/domain acronyms only:** An acronym qualifies when it is a multi-letter abbreviation of a business or regulatory concept (e.g., `RIP`, `SG`, `SMSF`, `CSS`). When such an acronym is used:
+  - Expand it the **first time only** within a description. Subsequent uses in the same description string may use the bare acronym without re-expansion.
+  - If the acronym appears in the source code (comments, table names, column names — not PL/SQL variable names): write `ACRONYM (expansion) (ref: business_operation.source, line N)` on first use — e.g., `RIP (Re-appointed Invalidity Pensioner) (ref: ACRONYM_TEST_PKG.get_join_date, line 49)`
+  - If the acronym does not appear in the code but is well-known in the superannuation industry: write `ACRONYM (expansion) (not sourced from code)` on first use — e.g., `SMSF (Self-Managed Superannuation Fund) (ref: not sourced from code)`
+  - Do not use an acronym without one of the two forms above on its first use.
+
+**`label` guidance (BUSINESS_OPERATION):**
+- Use a short noun phrase that names what the operation *is* — not what it does step by step. A reader skimming a list of operations should immediately understand the scope without reading the description.
+- Use business vocabulary. Avoid PL/SQL identifiers, variable names, and technical implementation terms.
+- Derive from the procedure/function header comment when one is present; otherwise synthesise from the logic.
+- Title case. Three to six words is the target; avoid exceeding eight.
+- Examples: `"Previous Period"`, `"Calculate Discount Rate"`, `"Apply Order Discount"`, `"Membership Status Snapshot"`
 
 **Operation Types:**
 - `CALCULATION` — Derives a value (e.g., benefit amount, tax, contribution rate)
@@ -66,7 +111,9 @@ Represents a single, identifiable, and nameable business rule within an operatio
 BUSINESS_RULE
   id:             unique identifier (e.g., "BR-CONTRIB-001")
   label:          short business name
-  description:    plain English statement of the rule
+  description:    plain English summary covering the scope of this rule — what condition
+                  or logic it enforces, what values it computes or derives, and what
+                  outcome or side effect it produces
   rule_type:      [ CONSTRAINT | FORMULA | POLICY | ELIGIBILITY | DERIVATION | ALLOCATION | LOOKUP | ACTION ]
   priority:       integer (for ordered rule sets)
   source_lines:   PL/SQL line range for traceability
@@ -79,6 +126,25 @@ BUSINESS_RULE
   actions:        [ ACTION* ]      -- unconditional imperative outcomes (DML, CALL, etc.)
   data_inputs:    [ DATA_INPUT* ]  -- standalone data sources (e.g., procedure arguments)
 ```
+
+**`label` guidance (BUSINESS_RULE):**
+- Use a short action phrase that names what the rule *enforces or decides* — not how it is implemented.
+- Use business vocabulary. Avoid PL/SQL variable names, table names, and technical implementation terms.
+- Derive from inline comments (`-- Business rule:`, `-- Rule:`) or surrounding header comments when present; otherwise synthesise from the logic.
+- Title case. Three to six words is the target; avoid exceeding eight.
+- The label should be distinct from the `description`: the label is a scannable name; the description is a full plain-English explanation.
+- Examples: `"Minimum Order Total Constraint"`, `"Customer Tier Discount Rate Policy"`, `"Status Change Detection"`, `"New Contributor Identification and Recording"`
+
+**`description` guidance (BUSINESS_RULE):**
+- Write a plain English summary covering the scope of this rule only — what condition it tests or enforces, what value it derives, what decision it makes, or what side effect it produces. A business analyst unfamiliar with the code should be able to understand the rule's intent.
+- Scope is the specific rule block — the IF/ELSIF branch, the calculation, the cursor loop, or the action — not the surrounding procedure.
+- The description should be more detailed than the label: the label names the rule; the description explains it.
+- **PL/SQL identifiers are not acronyms.** Do not use PL/SQL variable names, parameter names, cursor names, or column names as terms in the description. Express the concept in plain English business vocabulary instead.
+- **Acronym rule — genuine business/domain acronyms only:** An acronym qualifies when it is a multi-letter abbreviation of a business or regulatory concept (e.g., `RIP`, `SG`, `SMSF`, `CSS`). When such an acronym is used:
+  - Expand it the **first time only** within a description. Subsequent uses in the same description string may use the bare acronym without re-expansion.
+  - If the acronym appears in the source code (comments, table names, column names — not PL/SQL variable names): write `ACRONYM (expansion) (ref: business_operation.source, line N)` on first use — e.g., `RIP (Re-appointed Invalidity Pensioner) (ref: ACRONYM_TEST_PKG.get_join_date, line 49)`
+  - If the acronym does not appear in the code but is well-known in the superannuation industry: write `ACRONYM (expansion) (not sourced from code)` on first use — e.g., `SMSF (Self-Managed Superannuation Fund) (not sourced from code)`
+  - Do not use an acronym without one of the two forms above on its first use.
 
 **`derived_values`** — When a rule computes intermediate values before its main logic (e.g., `v_days_overdue := TRUNC(SYSDATE - v_due_date)`, `v_loyalty_years := TRUNC(MONTHS_BETWEEN(SYSDATE, join_date) / 12)`), those formulas are listed here. Derived values are evaluated in order before conditions and branches, making execution dependencies explicit. Child nodes reference derived values via `REF`.
 
@@ -334,21 +400,34 @@ Represents a derived value sourced from a call to a user-defined PL/SQL function
 
 ```
 FUNCTION
-  id:           unique identifier
-  label:        name of the derived value
-  expression:   the call as it appears in source (e.g., "calc_discount_rate(p_customer_tier, p_order_total)")
-  result_type:  [ MONETARY | PERCENTAGE | INTEGER | DATE | BOOLEAN | CATEGORY ]
-  result_unit:  string (optional)
-  operands:     [ DATA_INPUT | CONSTANT | FORMULA | REF ]   -- inputs passed to the function
-  called_operation_id: null | "_EXTERNAL_" | BUSINESS_OPERATION.id
+  id:                  unique identifier
+  label:               name of the derived value
+  expression:          the call as it appears in source including arguments
+                         (e.g., "calc_discount_rate(p_customer_tier, p_order_total)")
+                         — for human readability and traceability only
+  target:              canonical resolution key — same format as ACTION(CALL).target:
+                         PACKAGE.function_name or bare function_name when the package
+                         and function name match case-insensitively.
+                         Set at extraction time; does not change after resolution.
+                         Use "_EXTERNAL_" when the callee's package is not in the batch.
+  called_operation_id: "_EXTERNAL_" | BUSINESS_OPERATION.id
+                         — the resolved result of two-pass resolution.
+                         "_EXTERNAL_" until the target is matched; upgraded to the matched
+                         BUSINESS_OPERATION.id on resolution.
+                         Never null — FUNCTION is only for user-defined calls;
+                         use FORMULA for built-in functions.
+  result_type:         [ MONETARY | PERCENTAGE | INTEGER | DATE | BOOLEAN | CATEGORY ]
+  result_unit:         string (optional)
+  operands:            [ DATA_INPUT | CONSTANT | FORMULA | REF ]   -- inputs passed to the function
 ```
 
-**`called_operation_id` values:**
-- `null` — The function is a built-in SQL or PL/SQL function (e.g., `ROUND`, `TRUNC`, `NVL`). No cross-reference is needed.
-- `"_EXTERNAL_"` — The function is a user-defined PL/SQL function that has not yet been resolved to a BUSINESS_OPERATION. Set this sentinel at parse time during initial extraction; a two-pass resolution step upgrades it to the actual `BUSINESS_OPERATION.id` once all operations in the source are known. The underscore wrapping distinguishes it from the PL/SQL reserved keyword `EXTERNAL`.
-- `"<id>"` — The function is resolved to a specific BUSINESS_OPERATION by its `id`. This cross-reference makes the dependency between the calling operation and the called function machine-navigable.
+**`target` vs `called_operation_id` on FUNCTION:**
+- `target` is the **resolution key** — the canonical `PACKAGE.function_name` string set at extraction time. It identifies *which* operation to look for and never changes.
+- `called_operation_id` is the **resolved result** — starts as `"_EXTERNAL_"` and is upgraded to the matched `BUSINESS_OPERATION.id` during two-pass resolution. It confirms whether resolution succeeded and provides a direct navigable reference.
 
-**Two-pass resolution:** When extracting a PL/SQL procedure that calls another user-defined function, the called function may not yet have been parsed. Set `called_operation_id: "_EXTERNAL_"` initially. After all operations in the source file are extracted, a resolution pass matches each FUNCTION node's `expression` against the `source` field of each `BUSINESS_OPERATION`. A match upgrades `called_operation_id` from `"_EXTERNAL_"` to the matched `BUSINESS_OPERATION.id`.
+This mirrors `ACTION(CALL)` exactly: both nodes carry `target` (key) and `called_operation_id` (result), making resolution state readable from the node itself without reverse-traversing `called_by_rule_id`.
+
+**Two-pass resolution:** When extracting a PL/SQL procedure that calls another user-defined function or procedure, set `target` on both `FUNCTION` and `ACTION(CALL)` nodes to the canonical `PACKAGE.function_name` form and initialise `called_operation_id` to `"_EXTERNAL_"`. After all operations in the batch are extracted, a resolution pass matches each node's `target` against the `source` field of each `BUSINESS_OPERATION` across all files. Matching is case-insensitive — normalise both values to lower case before comparing. On a match: set `called_operation_id` to the matched `BUSINESS_OPERATION.id` and append the enclosing `BUSINESS_RULE.id` to the target operation's `called_by_rule_id`. The package prefix in `target` maps directly to the `.sql` or `.pkb` source file, making cross-file resolution unambiguous. Calls to packages not present in the batch remain `"_EXTERNAL_"`.
 
 **FUNCTION vs FORMULA:** Use FUNCTION when the derived value is the return value of a named user-defined PL/SQL function call (e.g., `calc_discount_rate(...)`). Use FORMULA for inline arithmetic, SQL aggregate expressions, or built-in function calls where no BUSINESS_OPERATION cross-reference exists.
 
@@ -500,12 +579,19 @@ In PL/SQL, actions correspond to `RAISE_APPLICATION_ERROR`, `INSERT`, `UPDATE`, 
 ACTION
   id:           unique identifier
   action_type:  [ RAISE_ERROR | UPDATE | INSERT | DELETE | CALL | RETURN | ASSIGN | COMPOSITE | EXIT_LOOP ]
-  target:       string  -- table.column (DML), procedure name (CALL), variable (ASSIGN),
+  target:       string  -- table.column (DML, INSERT/UPDATE/DELETE);
+                           fully qualified call expression for CALL
+                             (Package.Procedure or bare Procedure for intra-package calls)
+                             — this is the resolution key matched against BUSINESS_OPERATION.source
+                             during two-pass resolution; the package prefix identifies the
+                             .sql or .pkb source file containing the target operation;
+                           variable name (ASSIGN);
                            or loop label (EXIT_LOOP — omit for innermost loop)
   error_code:   integer (RAISE_ERROR only)
   message:      string  (RAISE_ERROR only — the error message text)
   value:        CONSTANT | DATA_INPUT | FORMULA (optional — for single-column UPDATE, ASSIGN, RETURN)
   arguments:    [ { name, value: DATA_INPUT | CONSTANT } ]  (CALL only)
+  called_operation_id: null | "_EXTERNAL_" | BUSINESS_OPERATION.id  (CALL only)
   columns:      [ { column_name, value: DATA_INPUT | CONSTANT | FORMULA } ]  (INSERT or multi-column UPDATE)
   steps:        [ ACTION+ ]  (COMPOSITE only — ordered list of sub-actions)
   description:  string (optional — business context)
@@ -516,7 +602,7 @@ ACTION
 - `UPDATE` — DML update to a table. For single-column updates, use `target` (table.column) and `value`. For multi-column updates, use `target` (table name) and `columns` array — same structure as INSERT.
 - `INSERT` — DML insert into a table (e.g., `INSERT INTO audit_log ...`)
 - `DELETE` — DML delete from a table (e.g., `DELETE FROM system_logs ...`)
-- `CALL` — Invoke another procedure or function (e.g., `update_status(p_cust_id, 'AUTO_APPROVE')`)
+- `CALL` — Invoke another procedure or function. Set `target` to the fully qualified call expression as it appears in source: `Package.Procedure` for cross-package calls, or bare `Procedure` for intra-package calls. The package prefix (if present) identifies the `.sql` or `.pkb` file containing the target and serves as the cross-file resolution key. Set `called_operation_id` using the same three-value semantics as `FUNCTION.called_operation_id`: `null` for built-ins, `"_EXTERNAL_"` for unresolved user-defined calls, or the resolved `BUSINESS_OPERATION.id`. Two-pass resolution matches `target` against `BUSINESS_OPERATION.source` across all operations in the batch; both `ACTION(CALL)` and `FUNCTION` nodes participate and contribute the enclosing `BUSINESS_RULE.id` to the target operation's `called_by_rule_id` reverse index. Calls whose target package is not present in the batch remain `"_EXTERNAL_"`.
 - `RETURN` — Return a value from a function or procedure (exits the subprogram)
 - `ASSIGN` — Set a local variable to a value (intermediate assignment within a rule)
 - `COMPOSITE` — An ordered sequence of sub-actions that execute together as a single business outcome. Use this when a condition branch leads to multiple DML statements or calls that collectively implement one business decision. The `steps` array contains the individual ACTION nodes in execution order. Each step has its own `id` (conventionally the parent's id with a letter suffix, e.g., `ACT_XXX_001A`, `ACT_XXX_001B`).
@@ -651,8 +737,14 @@ LOOKUP_REF
 ```
 ABRT              ::= ( BUSINESS_OPERATION | TRIGGER_OPERATION )+
 
-BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+,
-                          called_by_operation_id:[ BUSINESS_OPERATION.id ]* }
+BUSINESS_OPERATION ::= { id, label, description,
+                          source:( "PACKAGE.procedure_name" | "procedure_name" ),
+                                  -- PACKAGE = CREATE PACKAGE BODY name in UPPER CASE;
+                                  --           or file stem in UPPER CASE if no package statement
+                                  -- procedure_name = CREATE PROCEDURE/FUNCTION name in lower case
+                                  -- omit PACKAGE prefix when it matches procedure_name (case-insensitive)
+                          operation_type, BUSINESS_RULE+,
+                          called_by_rule_id:[ "\"<BUSINESS_OPERATION.label>\" BUSINESS_RULE.id" ]* }
 
 TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
                          trigger_timing, trigger_event, trigger_level,
@@ -697,6 +789,7 @@ ACTION            ::= { id, action_type:(RAISE_ERROR | UPDATE | INSERT | DELETE 
                          error_code?, message?,
                          value:(CONSTANT | DATA_INPUT | FORMULA)?,
                          arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
+                         called_operation_id:( null | "_EXTERNAL_" | BUSINESS_OPERATION.id )?,
                          columns:[ { column_name, value:(DATA_INPUT | CONSTANT | FORMULA) } ]?,
                          steps:[ ACTION+ ]?,
                          description? }
@@ -711,7 +804,10 @@ FORMULA           ::= { id, label, expression, result_type, result_unit?,
 
 FUNCTION          ::= { id, label, expression, result_type, result_unit?,
                          operands:( DATA_INPUT | CONSTANT | FORMULA | REF )+,
-                         called_operation_id:( null | "_EXTERNAL_" | BUSINESS_OPERATION.id ) }
+                         target:( "_EXTERNAL_" | source-ref ),
+                         called_operation_id:( "_EXTERNAL_" | BUSINESS_OPERATION.id ) }
+                         -- target: canonical resolution key; source-ref = "PACKAGE.function_name" | "function_name"
+                         -- called_operation_id: resolved result — "_EXTERNAL_" until matched; never null
 
 POLICY_BRANCH     ::= { id, label,
                          discriminator_type:( SIMPLE | SEARCHED ),
@@ -1276,7 +1372,7 @@ ABRT
 
 ---
 
-*ABRT Specification v1.12 — Superannuation Legacy System Documentation Project*
+*ABRT Specification v1.24 — Superannuation Legacy System Documentation Project*
 *v1.1 adds TRIGGER_OPERATION root node for Oracle database triggers*
 *v1.2 adds optional CONDITION node to POLICY_CASE for IF/ELSIF guard expressions*
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
@@ -1289,3 +1385,15 @@ ABRT
 *v1.10 adds called_by_operation_id array to BUSINESS_OPERATION — reverse index of all BUSINESS_OPERATIONs that contain a FUNCTION node whose called_operation_id resolves to this operation; each entry is the calling BUSINESS_OPERATION.id making the invocation graph fully bidirectional; populated during the two-pass resolution step alongside called_operation_id resolution; validators enforce consistency between FUNCTION.called_operation_id and the corresponding called_by_operation_id entry*
 *v1.11 renames FUNCTION.operation_id to FUNCTION.called_operation_id — disambiguates direction: the field identifies the operation being called (callee), not the operation doing the calling (caller); pairs symmetrically with BUSINESS_OPERATION.called_by_operation_id*
 *v1.12 adds EXIT_LOOP to ACTION.action_type enum — maps to PL/SQL EXIT and EXIT WHEN constructs; use target to name an outer loop label, omit for innermost loop; EXIT WHEN is modelled as a CONDITION with EXIT_LOOP in then_branch; distinguishes loop exit from procedure exit (RETURN)*
+*v1.13 adds called_operation_id to ACTION(CALL) — same three-value semantics as FUNCTION.called_operation_id (null, "_EXTERNAL_", or resolved BUSINESS_OPERATION.id); two-pass resolution now covers both FUNCTION and ACTION(CALL) nodes; called_by_operation_id reverse index on BUSINESS_OPERATION is populated from both node types, making the invocation graph complete for function-return calls and void procedure calls alike*
+*v1.14 formalises BUSINESS_OPERATION.source format: FILENAME.procedure_name where FILENAME is the source file stem in UPPER CASE and procedure_name is in lower case; prefix is omitted when the file stem and procedure name match case-insensitively (e.g., "calc_discount_rate"); this canonical form is the resolution key matched by FUNCTION.target and ACTION(CALL).target during two-pass resolution; matching is case-insensitive (normalise to lower case before comparing)*
+*v1.15 renames FUNCTION.called_operation_id to FUNCTION.target — aligns FUNCTION and ACTION(CALL) so both use target as the canonical resolution key in the same FILENAME.function_name format; FUNCTION.expression is retained for human readability (full call with arguments) but is no longer the resolution key; removes the null sentinel (built-in functions must use FORMULA not FUNCTION); two-pass resolution now uses target on both node types symmetrically*
+*v1.16 renames BUSINESS_OPERATION.called_by_operation_id to called_by_rule_id — value changes from BUSINESS_OPERATION.id to BUSINESS_RULE.id; two-pass resolution now appends the enclosing BUSINESS_RULE.id (not the containing BUSINESS_OPERATION.id) of each matching FUNCTION or ACTION(CALL) node; this pinpoints the exact rule responsible for the call rather than just the containing operation*
+*v1.17 refines BUSINESS_OPERATION.source derivation: the PACKAGE component is taken from the CREATE PACKAGE BODY statement name (UPPER CASE) when present, falling back to the file stem only when no package statement exists; the procedure/function name component is taken from the CREATE PROCEDURE or CREATE FUNCTION statement name (lower case); this makes source authoritative from the PL/SQL source code rather than the file system*
+*v1.18 adds label guidance to BUSINESS_OPERATION and BUSINESS_RULE — BUSINESS_OPERATION label is a short noun phrase naming what the operation is (title case, 3–6 words, derived from header comments where present); BUSINESS_RULE label is a short action phrase naming what the rule enforces or decides (same conventions); both must use business vocabulary, avoid PL/SQL identifiers, and remain distinct from the description field*
+*v1.19 adds description field to BUSINESS_OPERATION node definition (previously missing from the spec despite being required by validators); adds description guidance to both BUSINESS_OPERATION and BUSINESS_RULE: description must be a plain English summary covering the full scope of the operation or rule respectively; acronym rule introduced — every acronym must be followed by its expansion and a parenthetical source reference citing business_operation.source and line number (for operation descriptions) or business_operation.source, business_rule.label, and line number (for rule descriptions); acronyms well-known in the superannuation industry but not present in the code must be followed by the expansion and "(not sourced from code)"*
+*v1.20 restores called_operation_id to FUNCTION node — completes the symmetry with ACTION(CALL): FUNCTION.target is the resolution key (set at extraction time, never changes) and FUNCTION.called_operation_id is the resolved result (initialised to "_EXTERNAL_", upgraded to matched BUSINESS_OPERATION.id during two-pass resolution); null is excluded since FUNCTION is only for user-defined calls; two-pass resolution now sets called_operation_id on both FUNCTION and ACTION(CALL) nodes*
+*v1.21 changes called_by_rule_id entry format: each entry is now a composite string "\"<CALLING_OPERATION_LABEL>\" BUSINESS_RULE.id" — the calling BUSINESS_OPERATION.label in double-quote characters followed by a space and the enclosing BUSINESS_RULE.id; this makes the calling operation immediately readable in the entry without a separate lookup*
+*v1.22 refines description acronym rule: (1) PL/SQL identifiers (variable names, parameter names, cursor names, column names) are not acronyms and must not appear as terms in descriptions — use plain English business vocabulary instead; (2) a genuine business/domain acronym (e.g., RIP, SG, SMSF) need only be expanded once per description — subsequent uses in the same description string may use the bare acronym without re-expansion*
+*v1.23 adds "ref: " prefix inside the parenthetical citation of code-sourced acronym expansions — format is now (ref: source, line N) rather than (source, line N); (not sourced from code) citations are unchanged*
+*v1.24 simplifies acronym citation to package-name.procedure-name and line number only — removes the business_rule.label component so both BUSINESS_OPERATION and BUSINESS_RULE descriptions use the same citation format: (ref: business_operation.source, line N)*
