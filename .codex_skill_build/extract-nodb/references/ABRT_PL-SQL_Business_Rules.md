@@ -23,7 +23,7 @@ An **Abstract Business Rule Tree (ABRT)** is a structured, hierarchical represen
 
 ## 2. ABRT Node Taxonomy
 
-The ABRT is composed of **nine node categories**, each representing a distinct kind of business rule construct found in PL/SQL code.
+The ABRT is composed of **ten node categories**, each representing a distinct kind of business rule construct found in PL/SQL code.
 
 ---
 
@@ -35,10 +35,64 @@ The top-level container. Corresponds to a PL/SQL package, stored procedure, or f
 BUSINESS_OPERATION
   id:           unique identifier (e.g., "CALC_MEMBER_BENEFIT")
   label:        human-readable name
-  source:       PL/SQL object name (package.procedure)
+  description:  plain English summary covering the full scope of the operation — what
+                  it does, what inputs it consumes, and what outcomes it produces
+  source:       canonical reference to the PL/SQL object — format: PACKAGE.procedure_name
+                  Derivation rules (apply in order):
+                  1. PACKAGE — use the package name from the CREATE PACKAGE BODY statement
+                     if one is present in the source file, converted to UPPER CASE.
+                     If no package statement exists (standalone procedure or function),
+                     fall back to the source file stem in UPPER CASE.
+                  2. procedure_name — use the name from the CREATE PROCEDURE or
+                     CREATE FUNCTION statement, converted to lower case.
+                  3. If PACKAGE and procedure_name match case-insensitively, omit the
+                     prefix and use only the lower-case procedure/function name.
+                  Examples:
+                    pkg: SAS_MEMBERSHIPS_STATUS, proc: Previous_Period
+                      ⟹  "SAS_MEMBERSHIPS_STATUS.previous_period"
+                    pkg: APPLY_ORDER_DISCOUNT_TEST_PKG, proc: apply_order_discount_test
+                      ⟹  "APPLY_ORDER_DISCOUNT_TEST_PKG.apply_order_discount_test"
+                    pkg: APPLY_ORDER_DISCOUNT_TEST_PKG, proc: calc_discount_ratei_2
+                      ⟹  "APPLY_ORDER_DISCOUNT_TEST_PKG.calc_discount_ratei_2"
+                    no pkg, file: calc_discount_rate.sql, proc: calc_discount_rate
+                      ⟹  "calc_discount_rate"  (file stem matches proc name)
+                    no pkg, file: apply_order_discount.sql, proc: calc_discount_rate
+                      ⟹  "APPLY_ORDER_DISCOUNT.calc_discount_rate"
+                  This value is the resolution key matched by FUNCTION.target and
+                  ACTION(CALL).target during two-pass resolution.
   operation_type: [ CALCULATION | VALIDATION | PROCESS | QUERY | EVENT ]
   children:     [ BUSINESS_RULE* ]
+  called_by_rule_id: [ string* ]
+                  -- reverse index populated during the two-pass resolution step;
+                  -- each entry has the format: "<CALLING_OPERATION_LABEL>" BUSINESS_RULE.id
+                  -- where CALLING_OPERATION_LABEL is the label of the BUSINESS_OPERATION
+                  -- that contains the matching FUNCTION or ACTION(CALL) node,
+                  -- enclosed in double-quote characters, followed by a space and
+                  -- the BUSINESS_RULE.id of the enclosing rule;
+                  -- example: "\"Apply Order Discount\" BR-BFC-001-002"
+                  -- empty for entry-point operations that are not called by any rule
 ```
+
+**`called_by_rule_id`** — The reverse complement of `target` on both `FUNCTION` and `ACTION(CALL)` nodes. When the two-pass resolution step matches a node's `target` against a `BUSINESS_OPERATION.source`, it appends a composite entry to this array on the matched operation. Each entry is the calling `BUSINESS_OPERATION.label` (enclosed in double-quote characters) followed by a space and the enclosing `BUSINESS_RULE.id` — for example `"\"Apply Order Discount\" BR-BFC-001-002"`. This makes the calling operation immediately readable without having to look up the rule ID.
+
+Validators must enforce consistency: for every `FUNCTION` node or `ACTION(CALL)` node whose `target` is not `"_EXTERNAL_"` and matches a known `BUSINESS_OPERATION.source`, that operation must contain a matching entry in `called_by_rule_id` in the form `"<calling_operation_label>" <BUSINESS_RULE.id>`, and vice versa.
+
+**`description` guidance (BUSINESS_OPERATION):**
+- Write a plain English summary that covers the full scope of the operation: what business activity it performs, what data it consumes, and what it produces or changes. A reader unfamiliar with the code should understand the operation's purpose without reading the source.
+- Scope is the entire procedure or function — all procedures, loops, and side effects within it.
+- **PL/SQL identifiers are not acronyms.** Do not use PL/SQL variable names, parameter names, cursor names, or column names (e.g., `pMshpID`, `vPerID`, `crMshp`, `Per_ID`) as terms in the description. Express the concept in plain English business vocabulary (e.g., "membership identifier", "person identifier") instead.
+- **Acronym rule — genuine business/domain acronyms only:** An acronym qualifies when it is a multi-letter abbreviation of a business or regulatory concept (e.g., `RIP`, `SG`, `SMSF`, `CSS`). When such an acronym is used:
+  - Expand it the **first time only** within a description. Subsequent uses in the same description string may use the bare acronym without re-expansion.
+  - If the acronym appears in the source code (comments, table names, column names — not PL/SQL variable names): write `ACRONYM (expansion) (ref: business_operation.source, line N)` on first use — e.g., `RIP (Re-appointed Invalidity Pensioner) (ref: ACRONYM_TEST_PKG.get_join_date, line 49)`
+  - If the acronym does not appear in the code but is well-known in the superannuation industry: write `ACRONYM (expansion) (not sourced from code)` on first use — e.g., `SMSF (Self-Managed Superannuation Fund) (ref: not sourced from code)`
+  - Do not use an acronym without one of the two forms above on its first use.
+
+**`label` guidance (BUSINESS_OPERATION):**
+- Use a short noun phrase that names what the operation *is* — not what it does step by step. A reader skimming a list of operations should immediately understand the scope without reading the description.
+- Use business vocabulary. Avoid PL/SQL identifiers, variable names, and technical implementation terms.
+- Derive from the procedure/function header comment when one is present; otherwise synthesise from the logic.
+- Title case. Three to six words is the target; avoid exceeding eight.
+- Examples: `"Previous Period"`, `"Calculate Discount Rate"`, `"Apply Order Discount"`, `"Membership Status Snapshot"`
 
 **Operation Types:**
 - `CALCULATION` — Derives a value (e.g., benefit amount, tax, contribution rate)
@@ -57,11 +111,13 @@ Represents a single, identifiable, and nameable business rule within an operatio
 BUSINESS_RULE
   id:             unique identifier (e.g., "BR-CONTRIB-001")
   label:          short business name
-  description:    plain English statement of the rule
+  description:    plain English summary covering the scope of this rule — what condition
+                  or logic it enforces, what values it computes or derives, and what
+                  outcome or side effect it produces
   rule_type:      [ CONSTRAINT | FORMULA | POLICY | ELIGIBILITY | DERIVATION | ALLOCATION | LOOKUP | ACTION ]
   priority:       integer (for ordered rule sets)
   source_lines:   PL/SQL line range for traceability
-  derived_values: [ FORMULA* ]      -- intermediate values evaluated before main logic (optional)
+  derived_values: [ (FORMULA | FUNCTION)* ]  -- intermediate values evaluated before main logic (optional)
   cursor_scope:   CURSOR_SCOPE     -- iteration boundary for cursor-based rules (optional)
   conditions:     [ CONDITION* ]   -- conditional branches (IF/ELSIF/CASE guards)
   formulas:       [ FORMULA* ]     -- calculations and derivations
@@ -71,7 +127,28 @@ BUSINESS_RULE
   data_inputs:    [ DATA_INPUT* ]  -- standalone data sources (e.g., procedure arguments)
 ```
 
+**`label` guidance (BUSINESS_RULE):**
+- Use a short action phrase that names what the rule *enforces or decides* — not how it is implemented.
+- Use business vocabulary. Avoid PL/SQL variable names, table names, and technical implementation terms.
+- Derive from inline comments (`-- Business rule:`, `-- Rule:`) or surrounding header comments when present; otherwise synthesise from the logic.
+- Title case. Three to six words is the target; avoid exceeding eight.
+- The label should be distinct from the `description`: the label is a scannable name; the description is a full plain-English explanation.
+- Examples: `"Minimum Order Total Constraint"`, `"Customer Tier Discount Rate Policy"`, `"Status Change Detection"`, `"New Contributor Identification and Recording"`
+
+**`description` guidance (BUSINESS_RULE):**
+- Write a plain English summary covering the scope of this rule only — what condition it tests or enforces, what value it derives, what decision it makes, or what side effect it produces. A business analyst unfamiliar with the code should be able to understand the rule's intent.
+- Scope is the specific rule block — the IF/ELSIF branch, the calculation, the cursor loop, or the action — not the surrounding procedure.
+- The description should be more detailed than the label: the label names the rule; the description explains it.
+- **PL/SQL identifiers are not acronyms.** Do not use PL/SQL variable names, parameter names, cursor names, or column names as terms in the description. Express the concept in plain English business vocabulary instead.
+- **Acronym rule — genuine business/domain acronyms only:** An acronym qualifies when it is a multi-letter abbreviation of a business or regulatory concept (e.g., `RIP`, `SG`, `SMSF`, `CSS`). When such an acronym is used:
+  - Expand it the **first time only** within a description. Subsequent uses in the same description string may use the bare acronym without re-expansion.
+  - If the acronym appears in the source code (comments, table names, column names — not PL/SQL variable names): write `ACRONYM (expansion) (ref: business_operation.source, line N)` on first use — e.g., `RIP (Re-appointed Invalidity Pensioner) (ref: ACRONYM_TEST_PKG.get_join_date, line 49)`
+  - If the acronym does not appear in the code but is well-known in the superannuation industry: write `ACRONYM (expansion) (not sourced from code)` on first use — e.g., `SMSF (Self-Managed Superannuation Fund) (not sourced from code)`
+  - Do not use an acronym without one of the two forms above on its first use.
+
 **`derived_values`** — When a rule computes intermediate values before its main logic (e.g., `v_days_overdue := TRUNC(SYSDATE - v_due_date)`, `v_loyalty_years := TRUNC(MONTHS_BETWEEN(SYSDATE, join_date) / 12)`), those formulas are listed here. Derived values are evaluated in order before conditions and branches, making execution dependencies explicit. Child nodes reference derived values via `REF`.
+
+**`data_inputs`** — Contains only `DATA_INPUT` source nodes (procedure arguments, table columns, cursor fields, package variables, etc.). `CONSTANT` nodes must **never** appear here. Constants that parameterise a rule's logic belong inline as operands within the nodes where they are actually used — specifically `CONDITION.left_operand` / `CONDITION.right_operand`, `FORMULA.operands`, or `ACTION.arguments` / `ACTION.value`. Placing a `CONSTANT` in `data_inputs` is a structural error.
 
 **Rule Types:**
 - `CONSTRAINT` — A hard limit or prohibition (e.g., "Contribution must not exceed concessional cap")
@@ -82,6 +159,23 @@ BUSINESS_RULE
 - `ALLOCATION` — Distributes an amount across accounts or members
 - `LOOKUP` — Retrieves a rate or value from a reference table based on criteria
 - `ACTION` — An unconditional imperative side effect: DML, procedure call, error raising, or assignment. Use this rule type when the business rule exists solely to perform an action with no condition guarding it. Actions reached through conditional logic should still use `CONDITION.then_branch` / `else_branch` with ACTION child nodes on the condition, not this rule type.
+
+**Rule Type Field Constraints:**
+
+The `rule_type` value determines which child fields are required and which are prohibited. Validators must enforce these constraints — a field listed as prohibited must be absent or empty; a field listed as required must be present and non-empty.
+
+| `rule_type`   | Required fields                        | Prohibited fields             |
+|---------------|----------------------------------------|-------------------------------|
+| `CONSTRAINT`  | `conditions` (non-empty)               | `policy_branch`               |
+| `FORMULA`     | `formulas` or `derived_values`         | `conditions`, `policy_branch` |
+| `POLICY`      | `policy_branch`                        | `conditions`                  |
+| `ELIGIBILITY` | `conditions` (non-empty)               | `policy_branch`               |
+| `DERIVATION`  | `conditions` or `formulas`             | `policy_branch`               |
+| `ALLOCATION`  | `formulas` or `actions`                | `policy_branch`               |
+| `LOOKUP`      | `lookup_ref`                           | `policy_branch`               |
+| `ACTION`      | `actions` (non-empty)                  | `conditions`, `policy_branch` |
+
+`lookup_ref`, `actions`, `formulas`, and `derived_values` may appear alongside the required fields of any rule type unless explicitly listed as prohibited above.
 
 ---
 
@@ -119,30 +213,152 @@ CURSOR_SCOPE
 
 ### 2.4 CONDITION (Branch Node)
 
-Represents a conditional branch within a business rule. Derived from IF / ELSIF / CASE / DECODE constructs in PL/SQL. Conditions form a tree of their own — AND/OR compositions are explicit child nodes.
+Represents a conditional branch within a business rule. Derived from IF / ELSIF / CASE / DECODE constructs in PL/SQL.
+
+A CONDITION node takes one of two **exclusive forms**. The form is determined by whether the node is a leaf comparison or a compound logical junction. These two forms must not be mixed on a single node.
+
+---
+
+#### Form 1 — Leaf Comparison
+
+A leaf comparison evaluates a single predicate: one left operand compared to one right operand via a comparison operator. It holds no children.
 
 ```
-CONDITION
-  id:           unique identifier
-  label:        plain English condition description
-  operator:     [ EQ | NEQ | GT | GTE | LT | LTE | IN | NOT_IN | IS_NULL | IS_NOT_NULL | BETWEEN ]
-  logical_op:   [ AND | OR | NOT | NONE ]  -- how this combines with siblings
-  left_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE
-  right_operand: DATA_INPUT | CONSTANT | DERIVED_VALUE | VALUE_SET
-  conditions:   [ CONDITION* ]    -- nested AND/OR sub-conditions
-  then_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH
-  else_branch:  ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH | NULL
+CONDITION (leaf)
+  id:            unique identifier
+  label:         plain English condition description
+  operator:      [ EQ | NEQ | GT | GTE | LT | LTE | IN | NOT_IN | IS_NULL | IS_NOT_NULL | BETWEEN ]
+  logical_op:    NONE          -- a leaf does not combine with siblings; always NONE
+  left_operand:  DATA_INPUT | CONSTANT | FORMULA
+  right_operand: DATA_INPUT | CONSTANT | FORMULA | VALUE_SET
+  conditions:    []            -- always empty; leaf nodes have no children
+  then_branch:   (absent)      -- then/else are placed on the enclosing COMPOUND, not on leaves
+  else_branch:   (absent)
 ```
 
-**Example mapping:**
+**Constraints:**
+- `operator` must be a comparison operator value from the enum above
+- `logical_op` must be `NONE`
+- `left_operand` and `right_operand` must both be present
+- `conditions` must be empty (`[]`)
+- `then_branch` and `else_branch` must be absent or null
+
+---
+
+#### Form 2 — Compound Logical Junction
+
+A compound junction combines two or more child CONDITION nodes via a logical operator. It carries no comparison of its own.
+
+```
+CONDITION (compound)
+  id:            unique identifier
+  label:         plain English description of the combined condition
+  operator:      null          -- a compound has no direct comparison operator
+  logical_op:    [ AND | OR | NOT ]
+  left_operand:  null          -- absent; the comparison lives in the child nodes
+  right_operand: null          -- absent
+  conditions:    [ CONDITION+ ] -- two or more leaf or compound children (one for NOT)
+  then_branch:   ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH
+  else_branch:   ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH | null
+```
+
+**Constraints:**
+- `operator` must be `null`
+- `left_operand` and `right_operand` must be `null`
+- `logical_op` must be `AND`, `OR`, or `NOT`
+- `conditions` must contain at least two children (`NOT` requires exactly one)
+- `then_branch` and `else_branch` are placed on the compound node, not on its leaf children
+
+---
+
+**The key rule — `operator` and `logical_op` are mutually exclusive roles:**
+A node that carries a comparison operator (`EQ`, `LT`, etc.) is a leaf and must have `logical_op: NONE`. A node that carries a logical junction (`AND`, `OR`, `NOT`) is a compound and must have `operator: null`. Setting both `operator: "LT"` and `logical_op: "AND"` on the same node is a grammar error.
+
+---
+
+#### Examples
+
+**Single leaf condition:**
 ```sql
-IF v_age >= 65 AND v_status = 'ACTIVE' THEN ...
+IF v_status != 'PAID' THEN
+  RAISE_APPLICATION_ERROR(-20002, 'Cannot ship unpaid orders.');
+END IF;
 ```
 Maps to:
 ```
-CONDITION(logical_op=AND)
-  ├── CONDITION(left=AGE, op=GTE, right=CONSTANT(65))
-  └── CONDITION(left=MEMBER_STATUS, op=EQ, right=CONSTANT('ACTIVE'))
+CONDITION (leaf)
+  operator:      NEQ
+  logical_op:    NONE
+  left_operand:  DATA_INPUT[ORDER_STATUS]
+  right_operand: CONSTANT('PAID')
+  conditions:    []
+  then_branch:   ACTION(RAISE_ERROR, -20002)
+  else_branch:   null
+```
+
+**Compound AND — two comparisons joined by AND:**
+```sql
+IF :NEW.quantity_on_hand < :NEW.reorder_point
+   AND :OLD.quantity_on_hand >= :OLD.reorder_point THEN
+  INSERT INTO purchase_orders ...;
+END IF;
+```
+Maps to:
+```
+CONDITION (compound, logical_op=AND)          ← then_branch lives here
+  operator:      null
+  left_operand:  null
+  right_operand: null
+  conditions: [
+    CONDITION (leaf)                           ← no then/else on leaves
+      operator: LT,  logical_op: NONE
+      left_operand:  DATA_INPUT[INVENTORY.QUANTITY_ON_HAND (:NEW)]
+      right_operand: DATA_INPUT[INVENTORY.REORDER_POINT (:NEW)]
+    ,
+    CONDITION (leaf)
+      operator: GTE, logical_op: NONE
+      left_operand:  DATA_INPUT[INVENTORY.QUANTITY_ON_HAND (:OLD)]
+      right_operand: DATA_INPUT[INVENTORY.REORDER_POINT (:OLD)]
+  ]
+  then_branch: ACTION(INSERT into PURCHASE_ORDERS)
+  else_branch: null
+```
+
+**Nested compound — AND containing a nested AND:**
+```sql
+IF v_hours_worked > 40
+   AND v_dept != 'EXECUTIVE'
+   AND v_salary_grade < 15 THEN
+  UPDATE payroll ...;
+END IF;
+```
+Maps to:
+```
+CONDITION (compound, logical_op=AND)
+  conditions: [
+    CONDITION (leaf, op=GT)   left=HOURS_WORKED,  right=CONSTANT(40)
+    CONDITION (leaf, op=NEQ)  left=DEPARTMENT,    right=CONSTANT('EXECUTIVE')
+    CONDITION (leaf, op=LT)   left=SALARY_GRADE,  right=CONSTANT(15)
+  ]
+  then_branch: ACTION(UPDATE PAYROLL)
+```
+
+**Compound OR nested inside AND:**
+```sql
+IF v_age < 18 OR (v_status = 'SUSPENDED' AND v_override != 'Y') THEN ...
+```
+Maps to:
+```
+CONDITION (compound, logical_op=OR)
+  conditions: [
+    CONDITION (leaf, op=LT)    left=AGE, right=CONSTANT(18)
+    CONDITION (compound, logical_op=AND)
+      conditions: [
+        CONDITION (leaf, op=EQ)   left=STATUS,   right=CONSTANT('SUSPENDED')
+        CONDITION (leaf, op=NEQ)  left=OVERRIDE, right=CONSTANT('Y')
+      ]
+  ]
+  then_branch: ...
 ```
 
 ---
@@ -158,7 +374,7 @@ FORMULA
   expression:   human-readable formula (e.g., "salary × accrual_rate × years_service")
   result_type:  [ MONETARY | PERCENTAGE | INTEGER | DATE | BOOLEAN | CATEGORY ]
   result_unit:  string (e.g., "AUD", "years", "%")
-  operands:     [ DATA_INPUT | CONSTANT | FORMULA ]   -- inputs to this formula
+  operands:     [ DATA_INPUT | CONSTANT | FORMULA | FUNCTION | REF ]   -- inputs to this formula
   operator_seq: ordered list of operators applied
   wrapper_fn:   [ GREATEST | LEAST | NVL | ABS | SIGN ] (optional)
   wrapper_args: [ CONSTANT | DATA_INPUT | FORMULA ]+   (optional — additional args to wrapper)
@@ -178,7 +394,46 @@ ROUNDING_RULE
 
 ---
 
-### 2.6 DATA_INPUT (Leaf Node)
+### 2.6 FUNCTION (Derived Value Node)
+
+Represents a derived value sourced from a call to a user-defined PL/SQL function. Distinct from FORMULA (which models inline arithmetic or SQL expressions), FUNCTION captures a call to a named PL/SQL function that is itself defined as a BUSINESS_OPERATION in the same ABRT.
+
+```
+FUNCTION
+  id:                  unique identifier
+  label:               name of the derived value
+  expression:          the call as it appears in source including arguments
+                         (e.g., "calc_discount_rate(p_customer_tier, p_order_total)")
+                         — for human readability and traceability only
+  target:              canonical resolution key — same format as ACTION(CALL).target:
+                         PACKAGE.function_name or bare function_name when the package
+                         and function name match case-insensitively.
+                         Set at extraction time; does not change after resolution.
+                         Use "_EXTERNAL_" when the callee's package is not in the batch.
+  called_operation_id: "_EXTERNAL_" | BUSINESS_OPERATION.id
+                         — the resolved result of two-pass resolution.
+                         "_EXTERNAL_" until the target is matched; upgraded to the matched
+                         BUSINESS_OPERATION.id on resolution.
+                         Never null — FUNCTION is only for user-defined calls;
+                         use FORMULA for built-in functions.
+  result_type:         [ MONETARY | PERCENTAGE | INTEGER | DATE | BOOLEAN | CATEGORY ]
+  result_unit:         string (optional)
+  operands:            [ DATA_INPUT | CONSTANT | FORMULA | REF ]   -- inputs passed to the function
+```
+
+**`target` vs `called_operation_id` on FUNCTION:**
+- `target` is the **resolution key** — the canonical `PACKAGE.function_name` string set at extraction time. It identifies *which* operation to look for and never changes.
+- `called_operation_id` is the **resolved result** — starts as `"_EXTERNAL_"` and is upgraded to the matched `BUSINESS_OPERATION.id` during two-pass resolution. It confirms whether resolution succeeded and provides a direct navigable reference.
+
+This mirrors `ACTION(CALL)` exactly: both nodes carry `target` (key) and `called_operation_id` (result), making resolution state readable from the node itself without reverse-traversing `called_by_rule_id`.
+
+**Two-pass resolution:** When extracting a PL/SQL procedure that calls another user-defined function or procedure, set `target` on both `FUNCTION` and `ACTION(CALL)` nodes to the canonical `PACKAGE.function_name` form and initialise `called_operation_id` to `"_EXTERNAL_"`. After all operations in the batch are extracted, a resolution pass matches each node's `target` against the `source` field of each `BUSINESS_OPERATION` across all files. Matching is case-insensitive — normalise both values to lower case before comparing. On a match: set `called_operation_id` to the matched `BUSINESS_OPERATION.id` and append the enclosing `BUSINESS_RULE.id` to the target operation's `called_by_rule_id`. The package prefix in `target` maps directly to the `.sql` or `.pkb` source file, making cross-file resolution unambiguous. Calls to packages not present in the batch remain `"_EXTERNAL_"`.
+
+**FUNCTION vs FORMULA:** Use FUNCTION when the derived value is the return value of a named user-defined PL/SQL function call (e.g., `calc_discount_rate(...)`). Use FORMULA for inline arithmetic, SQL aggregate expressions, or built-in function calls where no BUSINESS_OPERATION cross-reference exists.
+
+---
+
+### 2.7 DATA_INPUT (Leaf Node)
 
 Represents a data value consumed by a rule. This is the primary leaf node type — it traces where rule inputs come from.
 
@@ -206,7 +461,7 @@ DATA_INPUT
 
 ---
 
-### 2.7 CONSTANT (Leaf Node)
+### 2.8 CONSTANT (Leaf Node)
 
 Represents a hard-coded value or named constant that acts as a rule parameter. Distinguishing constants from inputs is critical — constants represent embedded policy decisions that may need to change.
 
@@ -230,7 +485,7 @@ CONSTANT
 
 ---
 
-### 2.8 VALUE_SET (Collection Leaf Node)
+### 2.9 VALUE_SET (Collection Leaf Node)
 
 Represents an explicit set of values used as the right operand of an `IN` or `NOT_IN` condition, or as a multi-value `when_value` in a `POLICY_CASE`. In PL/SQL this corresponds to the parenthesised list in `IN (...)` expressions or multi-value CASE branches.
 
@@ -264,7 +519,7 @@ CONDITION
 
 ---
 
-### 2.9 POLICY_BRANCH (Decision Node)
+### 2.10 POLICY_BRANCH (Decision Node)
 
 
 Represents a multi-way policy decision — where the same business operation follows different paths based on fund type, member category, product type, or regulatory regime. Common in superannuation where DB, DC, and hybrid funds co-exist.
@@ -314,21 +569,29 @@ A `BUSINESS_RULE` wrapper is only needed when the branch contains its own condit
 
 ---
 
-### 2.10 ACTION (Outcome Node)
+### 2.11 ACTION (Outcome Node)
 
 Represents an imperative outcome of a condition branch — an operation that the system performs when a condition is met (or not met). While nodes like `BUSINESS_RULE`, `FORMULA`, and `POLICY_BRANCH` describe *further evaluation*, an `ACTION` describes a *side effect*: raising an error, performing DML, calling a procedure, or returning a value.
 
-In PL/SQL, actions correspond to `RAISE_APPLICATION_ERROR`, `INSERT`, `UPDATE`, `DELETE` statements, procedure `CALL`s, `RETURN` statements, and variable assignments that appear inside IF/ELSIF/ELSE or CASE branches.
+In PL/SQL, actions correspond to `RAISE_APPLICATION_ERROR`, `INSERT`, `UPDATE`, `DELETE` statements, procedure `CALL`s, `RETURN` statements, variable assignments, and loop control statements that appear inside IF/ELSIF/ELSE or CASE branches.
 
 ```
 ACTION
   id:           unique identifier
-  action_type:  [ RAISE_ERROR | UPDATE | INSERT | DELETE | CALL | RETURN | ASSIGN | COMPOSITE ]
-  target:       string  -- table.column (DML), procedure name (CALL), or variable (ASSIGN)
+  action_type:  [ RAISE_ERROR | UPDATE | INSERT | DELETE | CALL | RETURN | ASSIGN | COMPOSITE | EXIT_LOOP ]
+  target:       string  -- table.column (DML, INSERT/UPDATE/DELETE);
+                           fully qualified call expression for CALL
+                             (Package.Procedure or bare Procedure for intra-package calls)
+                             — this is the resolution key matched against BUSINESS_OPERATION.source
+                             during two-pass resolution; the package prefix identifies the
+                             .sql or .pkb source file containing the target operation;
+                           variable name (ASSIGN);
+                           or loop label (EXIT_LOOP — omit for innermost loop)
   error_code:   integer (RAISE_ERROR only)
   message:      string  (RAISE_ERROR only — the error message text)
   value:        CONSTANT | DATA_INPUT | FORMULA (optional — for single-column UPDATE, ASSIGN, RETURN)
   arguments:    [ { name, value: DATA_INPUT | CONSTANT } ]  (CALL only)
+  called_operation_id: null | "_EXTERNAL_" | BUSINESS_OPERATION.id  (CALL only)
   columns:      [ { column_name, value: DATA_INPUT | CONSTANT | FORMULA } ]  (INSERT or multi-column UPDATE)
   steps:        [ ACTION+ ]  (COMPOSITE only — ordered list of sub-actions)
   description:  string (optional — business context)
@@ -339,10 +602,11 @@ ACTION
 - `UPDATE` — DML update to a table. For single-column updates, use `target` (table.column) and `value`. For multi-column updates, use `target` (table name) and `columns` array — same structure as INSERT.
 - `INSERT` — DML insert into a table (e.g., `INSERT INTO audit_log ...`)
 - `DELETE` — DML delete from a table (e.g., `DELETE FROM system_logs ...`)
-- `CALL` — Invoke another procedure or function (e.g., `update_status(p_cust_id, 'AUTO_APPROVE')`)
-- `RETURN` — Return a value from a function
+- `CALL` — Invoke another procedure or function. Set `target` to the fully qualified call expression as it appears in source: `Package.Procedure` for cross-package calls, or bare `Procedure` for intra-package calls. The package prefix (if present) identifies the `.sql` or `.pkb` file containing the target and serves as the cross-file resolution key. Set `called_operation_id` using the same three-value semantics as `FUNCTION.called_operation_id`: `null` for built-ins, `"_EXTERNAL_"` for unresolved user-defined calls, or the resolved `BUSINESS_OPERATION.id`. Two-pass resolution matches `target` against `BUSINESS_OPERATION.source` across all operations in the batch; both `ACTION(CALL)` and `FUNCTION` nodes participate and contribute the enclosing `BUSINESS_RULE.id` to the target operation's `called_by_rule_id` reverse index. Calls whose target package is not present in the batch remain `"_EXTERNAL_"`.
+- `RETURN` — Return a value from a function or procedure (exits the subprogram)
 - `ASSIGN` — Set a local variable to a value (intermediate assignment within a rule)
 - `COMPOSITE` — An ordered sequence of sub-actions that execute together as a single business outcome. Use this when a condition branch leads to multiple DML statements or calls that collectively implement one business decision. The `steps` array contains the individual ACTION nodes in execution order. Each step has its own `id` (conventionally the parent's id with a letter suffix, e.g., `ACT_XXX_001A`, `ACT_XXX_001B`).
+- `EXIT_LOOP` — Exits a cursor or `LOOP` construct. Maps to PL/SQL `EXIT` (unconditional) or `EXIT WHEN <condition>` (conditional — the condition is modelled on the enclosing `CONDITION` node, not here). Use `target` to name the loop label when exiting an outer loop from a nested context; omit `target` when exiting the immediately enclosing loop. Does **not** exit the enclosing procedure — use `RETURN` for that.
 
 **Guidance — CALL vs FORMULA:** When a PL/SQL branch body is a procedure call (e.g., `send_notification(member_id, email, 'URGENT_RENEWAL')`), model it as `ACTION(action_type=CALL)`, not as a FORMULA. FORMULAs are pure calculations that return a value with no side effects; ACTIONs are side-effecting operations. A procedure call that sends a notification, writes to a queue, or updates external state is always an ACTION, even if it happens to return a value.
 
@@ -407,9 +671,50 @@ ACTION(action_type=UPDATE, target="CLAIMS",
                 {column_name="UPDATED_DATE", value=DATA_INPUT[SYSDATE]}])
 ```
 
+```sql
+-- EXIT_LOOP (unconditional)
+EXIT;
+```
+Maps to:
+```
+ACTION(action_type=EXIT_LOOP)
+```
+
+```sql
+-- EXIT_LOOP (conditional — EXIT WHEN)
+IF v_term_date < vDueRec.Start_Date THEN
+  EXIT;
+END IF;
+-- or equivalently:
+EXIT WHEN v_term_date < vDueRec.Start_Date;
+```
+Maps to:
+```
+CONDITION (leaf)
+  operator:     LT
+  left_operand: DATA_INPUT[V_TERM_DATE]
+  right_operand: DATA_INPUT[DUES.START_DATE]
+  then_branch:  ACTION(action_type=EXIT_LOOP,
+                       description="Abnormal loop exit — terminal date precedes record start date")
+```
+
+```sql
+-- EXIT_LOOP targeting an outer loop by label
+<<outer_loop>>
+FOR r IN c_members LOOP
+  FOR s IN c_services LOOP
+    EXIT outer_loop WHEN s.invalid = 'Y';
+  END LOOP;
+END LOOP;
+```
+Maps to:
+```
+ACTION(action_type=EXIT_LOOP, target="outer_loop")
+```
+
 ---
 
-### 2.11 LOOKUP_REF (Reference Data Node)
+### 2.12 LOOKUP_REF (Reference Data Node)
 
 Represents a reference to a lookup table, rate table, or static classification table. Superannuation systems are rich in rate tables (contribution rates, tax brackets, fee schedules, age factors).
 
@@ -430,12 +735,24 @@ LOOKUP_REF
 ## 3. ABRT Grammar (Formal Notation)
 
 ```
-ABRT              ::= BUSINESS_OPERATION+
+ABRT              ::= ( BUSINESS_OPERATION | TRIGGER_OPERATION )+
 
-BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
+BUSINESS_OPERATION ::= { id, label, description,
+                          source:( "PACKAGE.procedure_name" | "procedure_name" ),
+                                  -- PACKAGE = CREATE PACKAGE BODY name in UPPER CASE;
+                                  --           or file stem in UPPER CASE if no package statement
+                                  -- procedure_name = CREATE PROCEDURE/FUNCTION name in lower case
+                                  -- omit PACKAGE prefix when it matches procedure_name (case-insensitive)
+                          operation_type, BUSINESS_RULE+,
+                          called_by_rule_id:[ "\"<BUSINESS_OPERATION.label>\" BUSINESS_RULE.id" ]* }
+
+TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
+                         trigger_timing, trigger_event, trigger_level,
+                         when_clause?, enabled,
+                         BUSINESS_RULE+ }
 
 BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
-                         derived_values:FORMULA*,
+                         derived_values:( FORMULA | FUNCTION )*,
                          cursor_scope:CURSOR_SCOPE?,
                          conditions:CONDITION*,
                          formulas:FORMULA*,
@@ -448,25 +765,49 @@ CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
                          filter:CONDITION,
                          fields:DATA_INPUT+ }
 
-CONDITION         ::= { id, label, operator, logical_op,
-                         left_operand, right_operand,
-                         conditions:CONDITION*,
-                         then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
-                         else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
+CONDITION         ::= LEAF_CONDITION | COMPOUND_CONDITION
 
-ACTION            ::= { id, action_type, target?,
+LEAF_CONDITION    ::= { id, label,
+                         operator:(EQ|NEQ|GT|GTE|LT|LTE|IN|NOT_IN|IS_NULL|IS_NOT_NULL|BETWEEN),
+                         logical_op:NONE,
+                         left_operand:(DATA_INPUT | CONSTANT | FORMULA),
+                         right_operand:(DATA_INPUT | CONSTANT | FORMULA | VALUE_SET),
+                         conditions:[] }
+
+COMPOUND_CONDITION ::= { id, label,
+                          operator:null,
+                          logical_op:(AND | OR | NOT),
+                          left_operand:null,
+                          right_operand:null,
+                          conditions:CONDITION+,
+                          then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
+                          else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
+
+ACTION            ::= { id, action_type:(RAISE_ERROR | UPDATE | INSERT | DELETE |
+                                        CALL | RETURN | ASSIGN | COMPOSITE | EXIT_LOOP),
+                         target?,
                          error_code?, message?,
                          value:(CONSTANT | DATA_INPUT | FORMULA)?,
                          arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
+                         called_operation_id:( null | "_EXTERNAL_" | BUSINESS_OPERATION.id )?,
                          columns:[ { column_name, value:(DATA_INPUT | CONSTANT | FORMULA) } ]?,
                          steps:[ ACTION+ ]?,
                          description? }
 
-FORMULA           ::= { id, label, expression, result_type,
-                         (DATA_INPUT | CONSTANT | FORMULA)+,
+FORMULA           ::= { id, label, expression, result_type, result_unit?,
+                         operands:( DATA_INPUT | CONSTANT | FORMULA | FUNCTION | REF )+,
+                         operator_seq?,
                          wrapper_fn:( GREATEST | LEAST | NVL | ABS | SIGN )?,
                          wrapper_args:( CONSTANT | DATA_INPUT | FORMULA )*,
-                         ROUNDING_RULE? }
+                         rounding:ROUNDING_RULE?,
+                         children:FORMULA* }
+
+FUNCTION          ::= { id, label, expression, result_type, result_unit?,
+                         operands:( DATA_INPUT | CONSTANT | FORMULA | REF )+,
+                         target:( "_EXTERNAL_" | source-ref ),
+                         called_operation_id:( "_EXTERNAL_" | BUSINESS_OPERATION.id ) }
+                         -- target: canonical resolution key; source-ref = "PACKAGE.function_name" | "function_name"
+                         -- called_operation_id: resolved result — "_EXTERNAL_" until matched; never null
 
 POLICY_BRANCH     ::= { id, label,
                          discriminator_type:( SIMPLE | SEARCHED ),
@@ -475,8 +816,8 @@ POLICY_BRANCH     ::= { id, label,
                          POLICY_CASE+ }
 
 POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
-                         when_value?, label, CONDITION?,
-                         (BUSINESS_RULE | ACTION | FORMULA)+ }
+                         when_value?, label, condition:CONDITION?,
+                         rule_set:(BUSINESS_RULE | ACTION | FORMULA)+ }
 
 LOOKUP_REF        ::= { id, label, table_name,
                          key_columns:DATA_INPUT+,
@@ -508,6 +849,12 @@ REF               ::= { type, ref:id }
                        -- consuming rule uses REF. This creates an implicit dependency
                        -- ordering between the two rules.
 ```
+
+**When to use REF vs inline:**
+- **Boolean `true` / `false` — always inline, never REF.** Boolean constants are primitives with no meaningful definition to centralise. A `REF` pointing to a `CONSTANT { value: true }` forces the reader to chase a reference to learn something they already know from context. Write the full `CONSTANT` node inline every time, regardless of repetition.
+- **Non-boolean `CONSTANT` — inline at first use; REF on repeat use within the same rule or across rules in the same operation.** This avoids duplicating policy-significant values (status codes, threshold dates, sentinel strings) while keeping their definition in one place.
+- **`DATA_INPUT` — same rule as non-boolean constants.** Define the full node once; use REF elsewhere.
+- **`FORMULA` result — REF is the primary mechanism** for consuming a derived value across multiple conditions or rules. Always REF rather than re-expressing the formula.
 
 ---
 
@@ -792,7 +1139,8 @@ When analysing PL/SQL code to build an ABRT, apply the following process:
 ### Step 0 — Separate Business Logic from Infrastructure Code
 Not all code within a procedure constitutes a business rule. Before extracting rules, identify and exclude **infrastructure/implementation logic** that serves the procedure's technical operation but carries no business meaning. Common patterns to exclude:
 - **Concurrency control** — advisory locks, `FOR UPDATE NOWAIT`, retry loops, `DBMS_LOCK.SLEEP`
-- **Audit/tracing** — logging inserts for operational observability (unless audit logging *is* the business rule, as in trigger-based audit trails)
+- **Audit/tracing** — logging inserts for operational observability
+- **Pure audit triggers** — database triggers whose sole purpose is to record history (e.g., calling a versioning procedure on every INSERT/UPDATE/DELETE with no filtering logic). These are infrastructure; do not extract them as ABRT content. If you encounter one, omit it entirely or record a one-line note in the parent operation's `notes` array explaining it was excluded as a pure audit trail. Distinguish from **notification/sync triggers** (which encode a business decision about *what changes matter* and *what downstream action results*) — those do contain extractable business rules.
 - **Resource assignment** — round-robin or load-balancing logic for assigning workers/assessors
 - **Identifier generation** — sequence-based reference numbers, batch ID calculation, string formatting
 - **Transaction control** — `COMMIT`, `ROLLBACK`, `SAVEPOINT`
@@ -964,81 +1312,9 @@ TRIGGER_OPERATION(trigger_event=INSERT, trigger_level=ROW)
 
 ---
 
-### 9.8 Updated ABRT Grammar
+### 9.8 ABRT Grammar
 
-```
-ABRT              ::= ( BUSINESS_OPERATION | TRIGGER_OPERATION )+
-
-BUSINESS_OPERATION ::= { id, label, source, operation_type, BUSINESS_RULE+ }
-
-TRIGGER_OPERATION ::= { id, label, trigger_name, table_name, table_owner?,
-                         trigger_timing, trigger_event, trigger_level,
-                         when_clause?, enabled,
-                         BUSINESS_RULE+ }
-
-BUSINESS_RULE     ::= { id, label, description, rule_type, priority,
-                         derived_values:FORMULA*,
-                         cursor_scope:CURSOR_SCOPE?,
-                         conditions:CONDITION*,
-                         formulas:FORMULA*,
-                         policy_branch:POLICY_BRANCH?,
-                         lookup_ref:LOOKUP_REF?,
-                         actions:ACTION*,
-                         data_inputs:DATA_INPUT* }
-
-CURSOR_SCOPE      ::= { id, label, cursor_name, source_table,
-                         filter:CONDITION,
-                         fields:DATA_INPUT+ }
-
-CONDITION         ::= { id, label, operator, logical_op,
-                         left_operand, right_operand,
-                         conditions:CONDITION*,
-                         then_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)?,
-                         else_branch:(ACTION | BUSINESS_RULE | FORMULA | POLICY_BRANCH)? }
-
-ACTION            ::= { id, action_type, target?,
-                         error_code?, message?,
-                         value:(CONSTANT | DATA_INPUT | FORMULA)?,
-                         arguments:[ { name, value:(DATA_INPUT | CONSTANT) } ]?,
-                         columns:[ { column_name, value:(DATA_INPUT | CONSTANT | FORMULA) } ]?,
-                         steps:[ ACTION+ ]?,
-                         description? }
-
-FORMULA           ::= { id, label, expression, result_type,
-                         (DATA_INPUT | CONSTANT | FORMULA)+,
-                         wrapper_fn:( GREATEST | LEAST | NVL | ABS | SIGN )?,
-                         wrapper_args:( CONSTANT | DATA_INPUT | FORMULA )*,
-                         ROUNDING_RULE? }
-
-POLICY_BRANCH     ::= { id, label,
-                         discriminator_type:( SIMPLE | SEARCHED ),
-                         discriminator:(DATA_INPUT | FORMULA)?,
-                         bracket_type:( MARGINAL | FLAT | TIERED )?,
-                         POLICY_CASE+ }
-
-POLICY_CASE       ::= { when_type:( CONSTANT | VALUE_SET | CONDITION | DEFAULT ),
-                         when_value?, label, CONDITION?,
-                         (BUSINESS_RULE | ACTION | FORMULA)+ }
-
-LOOKUP_REF        ::= { id, label, table_name,
-                         key_columns:DATA_INPUT+,
-                         result_column, lookup_type,
-                         effective_date_col?,
-                         fallback:CONSTANT? }
-
-DATA_INPUT        ::= { id, label, source_type, source_ref,
-                         data_type, is_key, nullable, default_value? }
-
-CONSTANT          ::= { id, label, value, value_type,
-                         const_type, description, review_flag }
-
-VALUE_SET         ::= { id, label, values:CONSTANT+, value_type,
-                         description?, review_flag }
-
-REF               ::= { type, ref:id }
-                       -- Cross-reference to an existing node by its id.
-                       -- See Section 3 grammar for full description.
-```
+The complete formal grammar, including `TRIGGER_OPERATION`, is defined in **Section 3**. Section 3 is the single authoritative source for all grammar rules.
 
 ### 9.9 Updated Node Relationship Summary
 
@@ -1096,7 +1372,7 @@ ABRT
 
 ---
 
-*ABRT Specification v1.7 — Superannuation Legacy System Documentation Project*
+*ABRT Specification v1.24 — Superannuation Legacy System Documentation Project*
 *v1.1 adds TRIGGER_OPERATION root node for Oracle database triggers*
 *v1.2 adds optional CONDITION node to POLICY_CASE for IF/ELSIF guard expressions*
 *v1.3 adds ACTION node for imperative outcomes (RAISE_ERROR, DML, CALL, RETURN, ASSIGN) on condition branches*
@@ -1104,3 +1380,20 @@ ABRT
 *v1.5 allows ACTION directly in POLICY_CASE rule_set — eliminates unnecessary BUSINESS_RULE wrappers for simple imperative outcomes*
 *v1.6 adds ACTION to BUSINESS_RULE rule_type enum and typed child arrays; replaces abstract `children` grouping with explicit typed attributes (conditions, formulas, policy_branch, lookup_ref, actions, data_inputs) matching JSON serialization; adds FORMULA to POLICY_CASE rule_set for direct calculation outcomes*
 *v1.7 adds COMPOSITE action_type with `steps` array for multi-action branch outcomes; extends `columns` attribute to multi-column UPDATE actions; adds cross-rule REF guidance; adds extraction Step 0 for separating business logic from infrastructure code*
+*v1.8 makes CONDITION node forms explicit: LEAF_CONDITION (operator set, logical_op=NONE, no children, no then/else_branch) and COMPOUND_CONDITION (operator=null, logical_op=AND/OR/NOT, children in conditions array) are mutually exclusive — setting both operator and logical_op on the same node is a grammar error; adds Rule Type Field Constraints table specifying required and prohibited child fields per rule_type, making rule_type a mechanically validatable structural constraint rather than a semantic label only*
+*v1.9 adds FUNCTION node (§2.6) for derived values sourced from user-defined PL/SQL function calls, distinct from FORMULA (inline expressions); FUNCTION carries operation_id (null for built-ins, "_EXTERNAL_" sentinel for unresolved user-defined functions, or resolved BUSINESS_OPERATION.id after two-pass resolution); derived_values updated to [(FORMULA | FUNCTION)*]; FUNCTION added as valid operand type in FORMULA; §3 FORMULA BNF corrected to add result_unit, named operands attribute, operator_seq, FUNCTION and REF as operand types, rounding attribute name, and children array — resolving gaps between §2.5 prose and §3 grammar; FUNCTION BNF added to §3*
+*v1.10 adds called_by_operation_id array to BUSINESS_OPERATION — reverse index of all BUSINESS_OPERATIONs that contain a FUNCTION node whose called_operation_id resolves to this operation; each entry is the calling BUSINESS_OPERATION.id making the invocation graph fully bidirectional; populated during the two-pass resolution step alongside called_operation_id resolution; validators enforce consistency between FUNCTION.called_operation_id and the corresponding called_by_operation_id entry*
+*v1.11 renames FUNCTION.operation_id to FUNCTION.called_operation_id — disambiguates direction: the field identifies the operation being called (callee), not the operation doing the calling (caller); pairs symmetrically with BUSINESS_OPERATION.called_by_operation_id*
+*v1.12 adds EXIT_LOOP to ACTION.action_type enum — maps to PL/SQL EXIT and EXIT WHEN constructs; use target to name an outer loop label, omit for innermost loop; EXIT WHEN is modelled as a CONDITION with EXIT_LOOP in then_branch; distinguishes loop exit from procedure exit (RETURN)*
+*v1.13 adds called_operation_id to ACTION(CALL) — same three-value semantics as FUNCTION.called_operation_id (null, "_EXTERNAL_", or resolved BUSINESS_OPERATION.id); two-pass resolution now covers both FUNCTION and ACTION(CALL) nodes; called_by_operation_id reverse index on BUSINESS_OPERATION is populated from both node types, making the invocation graph complete for function-return calls and void procedure calls alike*
+*v1.14 formalises BUSINESS_OPERATION.source format: FILENAME.procedure_name where FILENAME is the source file stem in UPPER CASE and procedure_name is in lower case; prefix is omitted when the file stem and procedure name match case-insensitively (e.g., "calc_discount_rate"); this canonical form is the resolution key matched by FUNCTION.target and ACTION(CALL).target during two-pass resolution; matching is case-insensitive (normalise to lower case before comparing)*
+*v1.15 renames FUNCTION.called_operation_id to FUNCTION.target — aligns FUNCTION and ACTION(CALL) so both use target as the canonical resolution key in the same FILENAME.function_name format; FUNCTION.expression is retained for human readability (full call with arguments) but is no longer the resolution key; removes the null sentinel (built-in functions must use FORMULA not FUNCTION); two-pass resolution now uses target on both node types symmetrically*
+*v1.16 renames BUSINESS_OPERATION.called_by_operation_id to called_by_rule_id — value changes from BUSINESS_OPERATION.id to BUSINESS_RULE.id; two-pass resolution now appends the enclosing BUSINESS_RULE.id (not the containing BUSINESS_OPERATION.id) of each matching FUNCTION or ACTION(CALL) node; this pinpoints the exact rule responsible for the call rather than just the containing operation*
+*v1.17 refines BUSINESS_OPERATION.source derivation: the PACKAGE component is taken from the CREATE PACKAGE BODY statement name (UPPER CASE) when present, falling back to the file stem only when no package statement exists; the procedure/function name component is taken from the CREATE PROCEDURE or CREATE FUNCTION statement name (lower case); this makes source authoritative from the PL/SQL source code rather than the file system*
+*v1.18 adds label guidance to BUSINESS_OPERATION and BUSINESS_RULE — BUSINESS_OPERATION label is a short noun phrase naming what the operation is (title case, 3–6 words, derived from header comments where present); BUSINESS_RULE label is a short action phrase naming what the rule enforces or decides (same conventions); both must use business vocabulary, avoid PL/SQL identifiers, and remain distinct from the description field*
+*v1.19 adds description field to BUSINESS_OPERATION node definition (previously missing from the spec despite being required by validators); adds description guidance to both BUSINESS_OPERATION and BUSINESS_RULE: description must be a plain English summary covering the full scope of the operation or rule respectively; acronym rule introduced — every acronym must be followed by its expansion and a parenthetical source reference citing business_operation.source and line number (for operation descriptions) or business_operation.source, business_rule.label, and line number (for rule descriptions); acronyms well-known in the superannuation industry but not present in the code must be followed by the expansion and "(not sourced from code)"*
+*v1.20 restores called_operation_id to FUNCTION node — completes the symmetry with ACTION(CALL): FUNCTION.target is the resolution key (set at extraction time, never changes) and FUNCTION.called_operation_id is the resolved result (initialised to "_EXTERNAL_", upgraded to matched BUSINESS_OPERATION.id during two-pass resolution); null is excluded since FUNCTION is only for user-defined calls; two-pass resolution now sets called_operation_id on both FUNCTION and ACTION(CALL) nodes*
+*v1.21 changes called_by_rule_id entry format: each entry is now a composite string "\"<CALLING_OPERATION_LABEL>\" BUSINESS_RULE.id" — the calling BUSINESS_OPERATION.label in double-quote characters followed by a space and the enclosing BUSINESS_RULE.id; this makes the calling operation immediately readable in the entry without a separate lookup*
+*v1.22 refines description acronym rule: (1) PL/SQL identifiers (variable names, parameter names, cursor names, column names) are not acronyms and must not appear as terms in descriptions — use plain English business vocabulary instead; (2) a genuine business/domain acronym (e.g., RIP, SG, SMSF) need only be expanded once per description — subsequent uses in the same description string may use the bare acronym without re-expansion*
+*v1.23 adds "ref: " prefix inside the parenthetical citation of code-sourced acronym expansions — format is now (ref: source, line N) rather than (source, line N); (not sourced from code) citations are unchanged*
+*v1.24 simplifies acronym citation to package-name.procedure-name and line number only — removes the business_rule.label component so both BUSINESS_OPERATION and BUSINESS_RULE descriptions use the same citation format: (ref: business_operation.source, line N)*

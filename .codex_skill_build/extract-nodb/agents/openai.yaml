@@ -1,4 +1,4 @@
 interface:
   display_name: "Extract No DB"
-  short_description: "Extract ABRT JSON from PL/SQL without DB load"
-  default_prompt: "Use $extract-nodb to extract ABRT business-rule JSON from PL/SQL files in IN/ and write validated JSON to OUT/ without any database load."
+  short_description: "Extract ABRT v1.24 JSON from PL/SQL without DB load"
+  default_prompt: "Use $extract-nodb to extract fresh ABRT v1.24 business-rule JSON from `.sql`, `.pkb`, and `.trg` files in `IN/`, validate it, and write the results to `OUT/` without any database load."
